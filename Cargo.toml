@@ -1,5 +1,5 @@
 [package]
-name = "solana_pump_monitor"
+name = "solradar"
 version = "0.1.0"
 edition = "2021"
 
