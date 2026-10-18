@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use chrono::{NaiveDateTime, Utc};
+use chrono::Utc;
 use serde_json::Value;
 use sqlx::{mysql::MySqlPoolOptions, MySqlPool, Row};
 use std::{collections::HashMap, env, time::Duration};
