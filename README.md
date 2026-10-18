@@ -12,13 +12,14 @@ SolRadar queries GeckoTerminal for Solana liquidity pools with **24-hour trading
 - Track 5-minute, 1-hour, and 24-hour volume, price, liquidity, buy/sell counts, and 5-minute price changes.
 - Flag `pump_candidate` using experimental volume acceleration and price/buy-pressure criteria.
 - Poll on an adjustable schedule (default: **60 seconds**).
-- Run unattended as a Linux **systemd** service, with automatic restart and startup at boot.
+- Run unattended under **PM2**, with automatic restart and startup after server reboot.
 
 ## Requirements
 
-- Ubuntu/Debian Linux server (systemd), or another OS with equivalent tooling
+- Ubuntu/Debian Linux server with a `p2` user account
 - Rust stable (`cargo` and `rustc`)
 - MySQL 8+ (or compatible MariaDB)
+- Node.js and npm (to install PM2)
 - Internet access to the GeckoTerminal API
 
 ## 1. Install build dependencies and Rust (Ubuntu/Debian)
@@ -32,33 +33,7 @@ rustc --version
 cargo --version
 ```
 
-You can install the database locally or use an existing MySQL server. If installing locally:
-
-```bash
-sudo apt install -y mysql-server
-sudo systemctl enable --now mysql
-```
-
-## 2. Create the database and a dedicated database user
-
-From the project directory:
-
-```bash
-sudo mysql < sql/schema.sql
-sudo mysql
-```
-
-Then run in the MySQL console, replacing the example password:
-
-```sql
-CREATE USER IF NOT EXISTS 'solradar_user'@'127.0.0.1' IDENTIFIED BY 'REPLACE_WITH_STRONG_PASSWORD';
-GRANT SELECT, INSERT, UPDATE ON solradar.* TO 'solradar_user'@'127.0.0.1';
-EXIT;
-```
-
-If using a remote database, create the user for the appropriate client host and ensure network access is securely restricted.
-
-## 3. Configure and compile
+## 2. Configure and compile
 
 ```bash
 cp .env.example .env
@@ -77,66 +52,71 @@ SCAN_INTERVAL_SECONDS=60
 MIN_LIQUIDITY_USD=0
 ```
 
-**Important:** URL-encode reserved characters in the MySQL password inside `DATABASE_URL` (for example `@` becomes `%40`). `MAX_PAGES` is clamped to 1–10 by the current code. Respect the provider's current request quotas. The application waits between pages, but other requests and provider rules may affect rate limits.
-
 Test in the foreground:
 
 ```bash
 cargo run --release
 ```
 
-Press `Ctrl+C` to stop the foreground run before configuring systemd.
+### Install PM2
 
-## 4. Install as a systemd background service
-
-Run these commands **from the project's directory** after building and editing `.env`:
+Install Node.js and npm if needed, then:
 
 ```bash
-# Create a restricted service account and deployment folder.
-sudo useradd --system --home-dir /opt/solradar --shell /usr/sbin/nologin solradar 2>/dev/null || true
-sudo install -d -o solradar -g solradar -m 750 /opt/solradar
-
-# Deploy compiled binary and private environment configuration.
-sudo install -o root -g root -m 755 target/release/solradar /opt/solradar/solradar
-sudo install -o root -g solradar -m 640 .env /opt/solradar/.env
-
-# Register, start, and enable automatic start on boot.
-sudo install -o root -g root -m 644 deploy/solradar.service /etc/systemd/system/solradar.service
-sudo systemctl daemon-reload
-sudo systemctl enable --now solradar
+sudo npm install -g pm2
 ```
 
-The service runs in the background, restarts after failures, and starts automatically following a server reboot.
+### Start SolRadar
 
-### Service management
-
-```bash
-sudo systemctl status solradar                 # Current status
-sudo journalctl -u solradar -f                # Live logs
-sudo journalctl -u solradar -n 100 --no-pager # Last 100 log lines
-sudo systemctl restart solradar              # Restart after changes
-sudo systemctl stop solradar                 # Stop
-sudo systemctl disable --now solradar        # Stop and disable at boot
-```
-
-### Deploying an update
-
-From your source checkout:
+Make sure `.env` is configured and the release binary has been built. Assuming your project is at `/home/p2/solradar`:
 
 ```bash
+cd /home/p2/solradar
 cargo build --release
-sudo systemctl stop solradar
-sudo install -o root -g root -m 755 target/release/solradar /opt/solradar/solradar
-sudo install -o root -g solradar -m 640 .env /opt/solradar/.env
-sudo systemctl start solradar
+pm2 start ./target/release/solradar --name solradar --interpreter none --cwd /home/p2/solradar
 ```
 
-If you modify the `.service` file, reinstall it and run `sudo systemctl daemon-reload` before restarting.
+`--interpreter none` tells PM2 to run the compiled Rust executable directly.
 
-## Database tables
+### Manage the process
 
-- `solana_pools`: latest pool attributes; primary key = pool address.
-- `solana_pool_snapshots`: historical observations, deduplicated per pool/timestamp, including `volume_acceleration_5m` and `pump_candidate`.
+```bash
+pm2 status               # Check running processes
+pm2 logs solradar        # Follow application logs
+pm2 restart solradar     # Restart the application
+pm2 stop solradar        # Stop the application
+pm2 delete solradar      # Remove the process from PM2
+```
+
+### Enable startup after reboot
+
+As the `p2` user, run:
+
+```bash
+pm2 startup
+```
+
+Copy and run the **exact `sudo` command printed by PM2** to configure the startup service for the `p2` user. Then run:
+
+```bash
+pm2 save
+```
+
+The saved process list is restored when the server boots. If you add or delete PM2 processes later, run `pm2 save` again.
+
+### Deploy updates
+
+```bash
+cd /home/p2/solradar
+cargo build --release
+pm2 restart solradar
+```
+
+When editing `.env`, restart the application to reload its dotenv configuration:
+
+```bash
+pm2 restart solradar
+```
 
 ## Example SQL queries
 
