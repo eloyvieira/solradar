@@ -71,9 +71,9 @@ sudo npm install -g pm2
 Make sure `.env` is configured and the release binary has been built. Assuming your project is at `/home/p2/solradar`:
 
 ```bash
-cd /home/p2/solradar
+cd /opt/infra/solradar
 cargo build --release
-pm2 start ./target/release/solradar --name solradar --interpreter none --cwd /home/p2/solradar
+pm2 start ./target/release/solradar --name solradar --interpreter none --cwd /opt/infra/solradar
 ```
 
 `--interpreter none` tells PM2 to run the compiled Rust executable directly.

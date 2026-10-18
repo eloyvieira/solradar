@@ -38,7 +38,7 @@ async fn save_pool(db: &MySqlPool, pool: &Value, tokens: &HashMap<String, (Strin
     let change = number(&a["price_change_percentage"]["m5"]);
     let timestamp = Utc::now().naive_utc();
     // Arredondamento para minuto: evita duplicação dentro da mesma janela.
-    let minute = NaiveDateTime::from_timestamp_opt(timestamp.and_utc().timestamp() / 60 * 60, 0).unwrap();
+    let minute = NaiveDateTime::from_timestamp_opt(timestamp.and_utc().timestamp() / 60 * 60, 0).unwrap().naive_utc();;
     let mut tx = db.begin().await?;
     sqlx::query("INSERT INTO solana_pools (pool_address, token_address, token_symbol, token_name, pair_name, price_usd, volume_m5_usd, volume_h1_usd, volume_h24_usd, liquidity_usd, buys_m5, sells_m5, change_m5_pct, first_seen, last_seen) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON DUPLICATE KEY UPDATE token_address=VALUES(token_address), token_symbol=VALUES(token_symbol), token_name=VALUES(token_name), pair_name=VALUES(pair_name), price_usd=VALUES(price_usd), volume_m5_usd=VALUES(volume_m5_usd), volume_h1_usd=VALUES(volume_h1_usd), volume_h24_usd=VALUES(volume_h24_usd), liquidity_usd=VALUES(liquidity_usd), buys_m5=VALUES(buys_m5), sells_m5=VALUES(sells_m5), change_m5_pct=VALUES(change_m5_pct), last_seen=VALUES(last_seen)")
         .bind(address).bind(if token_address.is_empty() {None} else {Some(token_address)}).bind(if symbol.is_empty(){None}else{Some(symbol.as_str())}).bind(if name.is_empty(){None}else{Some(name.as_str())})
