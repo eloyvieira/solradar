@@ -1,0 +1,2 @@
+mode = "PAPER"
+max_signal_age_seconds = 30

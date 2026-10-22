@@ -1,0 +1,5 @@
+min_acceleration = 2.0
+min_price_change_m5_pct = 2.0
+min_buy_count_ratio = 0.60
+min_liquidity_usd = 50000.0
+min_volume_m5_usd = 10000.0

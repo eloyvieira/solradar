@@ -1,0 +1,8 @@
+[package]
+name="solradar-database"
+version="0.2.0"
+edition="2021"
+
+[dependencies]
+anyhow = { workspace = true }
+sqlx = { workspace = true }

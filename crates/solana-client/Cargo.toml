@@ -1,0 +1,9 @@
+[package]
+name="solradar-solana-client"
+version="0.2.0"
+edition="2021"
+
+[dependencies]
+anyhow = { workspace = true }
+reqwest = { workspace = true }
+serde_json = { workspace = true }

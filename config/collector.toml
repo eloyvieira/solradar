@@ -1,0 +1,5 @@
+scan_interval_seconds = 60
+max_pages = 3
+min_volume_h24_usd = 300000.0
+min_liquidity_usd = 0.0
+request_spacing_seconds = 7

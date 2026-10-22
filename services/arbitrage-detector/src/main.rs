@@ -1,0 +1,23 @@
+use anyhow::Result;
+use futures_util::StreamExt;
+use lapin::options::{BasicAckOptions,BasicConsumeOptions,BasicQosOptions};
+use solradar_common::{database,channel,PoolEvent,config};
+use sqlx::Row;
+#[tokio::main]async fn main()->Result<()>{
+ solradar_common::init();let db=database().await?;let mq=channel().await?;mq.basic_qos(20,BasicQosOptions::default()).await?;
+ let mut stream=mq.basic_consume("market.arbitrage","arbitrage-detector",BasicConsumeOptions::default(),Default::default()).await?;
+ while let Some(d)=stream.next().await{let d=d?;let result:Result<()> = async{
+ let evt:PoolEvent=serde_json::from_slice(&d.data)?;
+ let rows=sqlx::query("SELECT pool_address,quote_token_address,CAST(price_usd AS CHAR) AS price,CAST(liquidity_usd AS CHAR) AS liquidity FROM solana_pools WHERE token_address=? AND last_seen>=DATE_SUB(UTC_TIMESTAMP(),INTERVAL 3 MINUTE) AND liquidity_usd>=? AND price_usd>0")
+ .bind(&evt.token_address).bind(config("ARBITRAGE_MIN_LIQUIDITY_USD",20_000.0)).fetch_all(&db).await?;
+ for (i,a) in rows.iter().enumerate(){for b in rows.iter().skip(i+1){
+ let pa:f64=a.get::<String,_>("price").parse().unwrap_or(0.);let pb:f64=b.get::<String,_>("price").parse().unwrap_or(0.);
+ if pa<=0.||pb<=0.{continue}let spread=solradar_market_models::spread_percent(pa,pb).unwrap_or(0.);
+ if spread>=config("ARBITRAGE_MIN_SPREAD_PCT",0.5){
+ // Apenas observação: preços USD indicativos não são cotações executáveis.
+ // Não emitir sinal de trade sem quote exata, token quote compatível e custos.
+ println!("ARBITRAGE OBSERVED {} vs {} spread={spread:.3}% (não executável)",a.get::<String,_>("pool_address"),b.get::<String,_>("pool_address"));
+ }
+ }}Ok(())}.await;
+ match result{Ok(())=>d.ack(BasicAckOptions::default()).await?,Err(e)=>{eprintln!("arbitrage error: {e:#}");d.nack(lapin::options::BasicNackOptions{requeue:true,..Default::default()}).await?;}}
+ }Ok(())}
