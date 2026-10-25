@@ -17,6 +17,7 @@ docker compose --env-file .env -f deploy/docker-compose.yml up -d --build collec
 docker compose --env-file .env -f deploy/docker-compose.yml up -d --force-recreate collector
 docker compose --env-file .env -f deploy/docker-compose.yml up -d --build --force-recreate --no-deps collector
 docker compose --env-file .env -f deploy/docker-compose.yml up -d --build arbitrage-detector pump-detector
+docker compose --env-file .env -f deploy/docker-compose.yml up -d --build --force-recreate --no-deps arbitrage-detector pump-detector
 
 docker compose -f deploy/docker-compose.yml restart collector
 docker compose -f deploy/docker-compose.yml stop collector
