@@ -72,7 +72,7 @@ use sqlx::Row;
 
 					    let res = sqlx::query(
 					        r#"
-					        INSERT IGNORE INTO trade_signals (
+					        INSERT IGNORE INTO signals_arbitrage (
 					            id,
 					            strategy,
 					            token_address,

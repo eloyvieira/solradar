@@ -143,7 +143,7 @@ use uuid::Uuid;
 
 				    let res = sqlx::query(
 				        r#"
-				        INSERT IGNORE INTO trade_signals (
+				        INSERT IGNORE INTO signals_pump (
 				            id,
 				            strategy,
 				            token_address,
