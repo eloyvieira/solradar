@@ -74,7 +74,6 @@ use sqlx::Row;
 					        r#"
 					        INSERT IGNORE INTO signals_arbitrage (
 					            id,
-					            strategy,
 					            token_address,
 					            pool_address,
 					            secondary_pool,

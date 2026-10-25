@@ -145,7 +145,6 @@ use uuid::Uuid;
 				        r#"
 				        INSERT IGNORE INTO signals_pump (
 				            id,
-				            strategy,
 				            token_address,
 				            pool_address,
 				            secondary_pool,
@@ -156,7 +155,6 @@ use uuid::Uuid;
 				        "#
 				    )
 				    .bind(&signal.id)
-				    .bind(&signal.strategy)
 				    .bind(&signal.token_address)
 				    .bind(&signal.pool_address)
 				    .bind(&signal.secondary_pool)
