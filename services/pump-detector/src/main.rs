@@ -151,7 +151,7 @@ use uuid::Uuid;
 				            observed_at,
 				            reason
 				        )
-				        VALUES (?, ?, ?, ?, ?, ?, ?)
+				        VALUES (?, ?, ?, ?, ?, ?)
 				        "#
 				    )
 				    .bind(&signal.id)

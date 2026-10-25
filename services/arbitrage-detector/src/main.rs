@@ -82,7 +82,6 @@ use sqlx::Row;
 					        )
 					        VALUES (
 					            UUID(),
-					            'ARBITRAGE',
 					            ?, ?, ?, ?, ?
 					        )
 					        "#
