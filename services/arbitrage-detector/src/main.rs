@@ -58,14 +58,54 @@ use sqlx::Row;
 
 					if spread>=config("ARBITRAGE_MIN_SPREAD_PCT",0.5){
 
-			            println!(
-			                "ARBITRAGE OBSERVED {} vs {} \
-			                 price_a={pa:.12} price_b={pb:.12} \
-			                 spread={spread:.3}% (não executável)",
-			                a.get::<String, _>("pool_address"),
-			                b.get::<String, _>("pool_address")
-			            );
+						let pool_a: String = a.get("pool_address");
+					    let pool_b: String = b.get("pool_address");
+					    let observed_at = evt.captured_at.naive_utc();
 
+					    let reason = format!(
+					        "price_a={pa:.12}; \
+					         price_b={pb:.12}; \
+					         spread={spread:.3}%; \
+					         quote_token={quote_a}; \
+					         executable=false"
+					    );
+
+					    let res = sqlx::query(
+					        r#"
+					        INSERT IGNORE INTO trade_signals (
+					            id,
+					            strategy,
+					            token_address,
+					            pool_address,
+					            secondary_pool,
+					            observed_at,
+					            reason
+					        )
+					        VALUES (
+					            UUID(),
+					            'ARBITRAGE',
+					            ?, ?, ?, ?, ?
+					        )
+					        "#
+					    )
+					    .bind(&evt.token_address)
+					    .bind(&pool_a)
+					    .bind(&pool_b)
+					    .bind(observed_at)
+					    .bind(&reason)
+					    .execute(&db)
+					    .await?;
+
+					    if res.rows_affected() > 0 {
+					        println!(
+					            "ARBITRAGE SAVED {} vs {} \
+					             price_a={pa:.12} \
+					             price_b={pb:.12} \
+					             spread={spread:.3}%",
+					            pool_a,
+					            pool_b
+					        );
+					    }
 					}
 				}
 			}
