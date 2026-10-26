@@ -111,7 +111,7 @@ async fn orca_fee(
 
     let rate = u16_at(&data, 45)?;
 
-    if rate >= 1_000_000 {
+    if rate > 60_000 {
         bail!("Invalid Orca fee");
     }
 
