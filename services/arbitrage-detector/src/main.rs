@@ -33,7 +33,7 @@ async fn get_sol_price(db: &MySqlPool) -> Result<Option<f64>> {
 	let mq=channel().await?;
     let min_liquidity = config( "ARBITRAGE_MIN_LIQUIDITY_USD", 20_000.0);
     let min_spread = config( "ARBITRAGE_MIN_SPREAD_PCT", 0.5);
-    let trade_amount = config("ARBITRAGE_TRADE_AMOUNT_USD", 1000.0);
+    let trade_amount: f64 = config("ARBITRAGE_TRADE_AMOUNT_USD", 1000.0_f64);
     let min_profit = config("ARBITRAGE_MIN_NET_PROFIT_USD", 1.0);
 
     if !trade_amount.is_finite() || trade_amount <= 0.0 {
