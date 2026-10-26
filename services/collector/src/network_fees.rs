@@ -2,11 +2,13 @@ use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 use sqlx::MySqlPool;
 use std::time::Duration;
+use sqlx::Row;
 use tokio::time::{interval, MissedTickBehavior};
 
 pub async fn get_recent_priority_fees(
     client: &reqwest::Client,
     rpc_url: &str,
+    accounts: &[String],
 ) -> Result<Vec<u64>> {
     let response = client
         .post(rpc_url)
@@ -14,7 +16,7 @@ pub async fn get_recent_priority_fees(
             "jsonrpc": "2.0",
             "id": 1,
             "method": "getRecentPrioritizationFees",
-            "params": []
+            "params": [accounts]
         }))
         .send()
         .await?
@@ -65,34 +67,89 @@ pub async fn update_network_fees(
     client: &reqwest::Client,
     rpc_url: &str,
 ) -> Result<()> {
-    let fees = get_recent_priority_fees(
-        client,
-        rpc_url,
-    ).await?;
 
-    let samples = fees.len();
-    let priority_fee = percentile_75(fees)?;
-
-    let result = sqlx::query(
+    let rows = sqlx::query(
         r#"
-        UPDATE solana_pools
-        SET
-            network_fee_lamports = ?,
-            network_fee_updated_at = UTC_TIMESTAMP(6)
+        SELECT pool_address
+        FROM solana_pools
+        WHERE last_seen >= DATE_SUB(
+            UTC_TIMESTAMP(), INTERVAL 5 MINUTE
+        )
+        ORDER BY last_seen DESC
         "#
     )
-    .bind(priority_fee)
-    .execute(db)
+    .fetch_all(db)
     .await?;
 
+	let mut updated = 0_u64;
+    let mut failed = 0_u64;
+
+    for row in rows {
+        let pool_address: String = row.try_get("pool_address")?;
+        let accounts = vec![pool_address.clone()];
+        let fees = match get_recent_priority_fees(
+            client,
+            rpc_url,
+            &accounts,
+        ).await {
+            Ok(fees) => fees,
+            Err(error) => {
+                failed += 1;
+                eprintln!(
+                    "NETWORK FEE RPC ERROR pool={} error={:#}",
+                    pool_address,
+                    error
+                );
+                continue;
+            }
+        };
+
+        let priority_fee = match percentile_75(fees) {
+            Ok(fee) => fee,
+            Err(error) => {
+                failed += 1;
+                eprintln!(
+                    "NETWORK FEE EMPTY pool={} error={:#}",
+                    pool_address,
+                    error
+                );
+                continue;
+            }
+        };
+
+        let estimated_fee = 5_000_u64.saturating_add(priority_fee);
+
+        sqlx::query(
+            r#"
+            UPDATE solana_pools
+            SET
+                network_fee_lamports = ?,
+                network_fee_updated_at = UTC_TIMESTAMP(6)
+            WHERE pool_address = ?
+            "#
+        )
+        .bind(estimated_fee)
+        .bind(&pool_address)
+        .execute(db)
+        .await?;
+
+        updated += 1;
+        println!(
+            "NETWORK FEE pool={} priority={} total_estimated={}",
+            pool_address,
+            priority_fee,
+            estimated_fee
+        );
+
+        tokio::time::sleep(
+            Duration::from_millis(300)
+        ).await;
+    }
+
     println!(
-        "SOLANA PRIORITY FEE \
-         p75={} lamports \
-         samples={} \
-         pools_updated={}",
-        priority_fee,
-        samples,
-        result.rows_affected()
+        "NETWORK FEES COMPLETE updated={} failed={}",
+        updated,
+        failed
     );
 
     Ok(())
@@ -105,9 +162,7 @@ pub async fn run(
     interval_seconds: u64,
 ) {
     let mut timer = interval(
-        Duration::from_secs(
-            interval_seconds.max(10)
-        )
+        Duration::from_secs( interval_seconds.max(10) )
     );
 
     timer.set_missed_tick_behavior(
