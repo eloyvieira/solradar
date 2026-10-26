@@ -10,47 +10,71 @@ pub async fn get_recent_priority_fees(
     rpc_url: &str,
     accounts: &[String],
 ) -> Result<Vec<u64>> {
-    let response = client
-        .post(rpc_url)
-        .json(&json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "getRecentPrioritizationFees",
-            "params": [accounts]
-        }))
-        .send()
-        .await?
-        .error_for_status()?;
 
-    let body: Value = response.json().await?;
+    let request = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "getRecentPrioritizationFees",
+        "params": [accounts]
+    });
 
-    if let Some(error) = body.get("error") {
-        bail!("Solana RPC: {error}");
+    let delays = [2_u64, 5, 10];
+
+    for attempt in 0..=delays.len() {
+
+        let response = client.post(rpc_url).json(&request).send().await?;
+        let status = response.status();
+
+        if status.as_u16() == 429 {
+            if attempt == delays.len() {
+                bail!("Solana RPC HTTP 429 após 4 tentativas");
+            }
+
+            let wait = response
+                .headers()
+                .get(reqwest::header::RETRY_AFTER)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(delays[attempt]);
+
+            eprintln!(
+                "SOLANA RPC RATE LIMIT: aguardando {}s",
+                wait
+            );
+
+            tokio::time::sleep( Duration::from_secs(wait) ).await;
+            continue;
+        }
+
+        let response = response.error_for_status()?;
+        let body: Value = response.json().await?;
+
+        if let Some(error) = body.get("error") {
+            bail!("Solana RPC: {error}");
+        }
+
+        let entries = body["result"].as_array().context("Invalid RPC response")?;
+        let mut samples: Vec<(u64, u64)> = entries
+            .iter()
+            .filter_map(|entry| {
+                Some((
+                    entry["slot"].as_u64()?,
+                    entry["prioritizationFee"].as_u64()?,
+                ))
+            })
+            .collect();
+
+        samples.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+
+        return Ok(
+            samples
+                .into_iter()
+                .take(30)
+                .map(|(_, fee)| fee)
+                .collect()
+        );
     }
-
-    let entries = body["result"]
-        .as_array()
-        .context("Invalid RPC response")?;
-
-    let mut samples: Vec<(u64, u64)> = entries
-        .iter()
-        .filter_map(|entry| {
-            Some((
-                entry["slot"].as_u64()?,
-                entry["prioritizationFee"].as_u64()?,
-            ))
-        })
-        .collect();
-
-    samples.sort_unstable_by(|a, b| b.0.cmp(&a.0));
-
-    Ok(
-        samples
-            .into_iter()
-            .take(30)
-            .map(|(_, fee)| fee)
-            .collect()
-    )
+    unreachable!()
 }
 
 fn percentile_75(mut fees: Vec<u64>) -> Result<u64> {
