@@ -22,7 +22,14 @@ pub async fn channel()->Result<Channel>{
 	let url=env::var("AMQP_URL").unwrap_or("amqp://guest:guest@localhost:5672/%2f".into());
 	let conn=Connection::connect(&url,ConnectionProperties::default()).await?;
 	let c=conn.create_channel().await?;
-	for q in ["market.arbitrage","market.pump","signals.execute","positions.monitor","ledger.events"]{
+	for q in [
+	    "market.arbitrage",
+	    "market.pump",
+	    "signals.execute",
+	    "signals.arbitrage.execute",
+	    "positions.monitor",
+	    "ledger.events",
+	] {
 		c.queue_declare(q,
 						QueueDeclareOptions{
 							durable:true,..Default::default()

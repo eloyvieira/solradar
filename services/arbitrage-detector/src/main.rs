@@ -1,7 +1,7 @@
 use anyhow::Result;
 use futures_util::StreamExt;
 use lapin::options::{BasicAckOptions,BasicNackOptions,BasicConsumeOptions,BasicQosOptions};
-use solradar_common::{database,channel,PoolEvent,config};
+use solradar_common::{database,channel,PoolEvent,Signal, publish,config};
 use sqlx::{MySqlPool, Row};
 
 async fn get_sol_price(db: &MySqlPool) -> Result<Option<f64>> {
@@ -271,6 +271,41 @@ async fn get_sol_price(db: &MySqlPool) -> Result<Option<f64>> {
 					.await?;
 
 					if res.rows_affected() > 0 {
+
+						let signal_row = sqlx::query(
+						    r#"
+						    SELECT id, status
+						    FROM signals_arbitrage
+						    WHERE pool_address = ?
+						      AND secondary_pool = ?
+						      AND observed_at = ?
+						    LIMIT 1
+						    "#
+						)
+						.bind(&pool_a)
+						.bind(&pool_b)
+						.bind(observed_at)
+						.fetch_one(&db)
+						.await?;
+
+						let signal_id: String = signal_row.get("id");
+						let signal_status: String = signal_row.get("status");
+						if signal_status == "OBSERVED" {
+						    publish(
+						        &mq,
+						        "signals.arbitrage.execute",
+						        &Signal {
+						            id: signal_id,
+						            strategy: "ARBITRAGE".to_string(),
+						            pool_address: pool_a.clone(),
+						            secondary_pool: Some(pool_b.clone()),
+						            token_address: evt.token_address.clone(),
+						            observed_at: evt.captured_at,
+						            reason: reason.clone(),
+						        },
+						    ).await?;
+						}
+
                         println!(
 						    "ARBITRAGE SAVED \
 						     token={} \
