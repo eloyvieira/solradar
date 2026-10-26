@@ -147,17 +147,15 @@ use uuid::Uuid;
 				            id,
 				            token_address,
 				            pool_address,
-				            secondary_pool,
 				            observed_at,
 				            reason
 				        )
-				        VALUES (?, ?, ?, ?, ?, ?)
+				        VALUES (?, ?, ?, ?, ?)
 				        "#
 				    )
 				    .bind(&signal.id)
 				    .bind(&signal.token_address)
 				    .bind(&signal.pool_address)
-				    .bind(&signal.secondary_pool)
 				    .bind(signal.observed_at.naive_utc())
 				    .bind(&signal.reason)
 				    .execute(&db)

@@ -18,6 +18,17 @@ use sqlx::Row;
 		let result:Result<()> = async{
 
 			let evt:PoolEvent=serde_json::from_slice(&d.data)?;
+            let age = chrono::Utc::now()
+                .signed_duration_since(evt.captured_at)
+                .num_seconds();
+            if age > 120 {
+                println!(
+                    "ARBITRAGE STALE EVENT token={} age={}s",
+                    evt.token_address, age
+                );
+                return Ok(());
+            }
+
 			let rows = sqlx::query(
 				    r#"
 				    SELECT
@@ -71,28 +82,35 @@ use sqlx::Row;
 					    );
 
 					    let res = sqlx::query(
-					        r#"
-					        INSERT IGNORE INTO signals_arbitrage (
-					            id,
-					            token_address,
-					            pool_address,
-					            secondary_pool,
-					            observed_at,
-					            reason
-					        )
-					        VALUES (
-					            UUID(),
-					            ?, ?, ?, ?, ?
-					        )
-					        "#
-					    )
-					    .bind(&evt.token_address)
-					    .bind(&pool_a)
-					    .bind(&pool_b)
-					    .bind(observed_at)
-					    .bind(&reason)
-					    .execute(&db)
-					    .await?;
+						    r#"
+						    INSERT IGNORE INTO signals_arbitrage (
+						        id,
+						        token_address,
+						        pool_address,
+						        secondary_pool,
+						        quote_token_address,
+						        price_a,
+						        price_b,
+						        spread_pct,
+						        observed_at,
+						        reason
+						    )
+						    VALUES (
+						        UUID(), ?, ?, ?, ?, ?, ?, ?, ?, ?
+						    )
+						    "#
+						)
+						.bind(&evt.token_address)
+						.bind(&pool_a)
+						.bind(&pool_b)
+						.bind(&quote_a)
+						.bind(format!("{pa:.18}"))
+						.bind(format!("{pb:.18}"))
+						.bind(format!("{spread:.8}"))
+						.bind(observed_at)
+						.bind(&reason)
+						.execute(&db)
+						.await?;
 
 					    if res.rows_affected() > 0 {
 					        println!(
