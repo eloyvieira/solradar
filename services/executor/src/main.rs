@@ -68,20 +68,22 @@ async fn process(db: &MySqlPool, cfg: &Runtime, sig: Signal) -> Result<()> {
     let max_age: i64 = config("MAX_SIGNAL_AGE_SECONDS", 30_i64);
     if age < 0 || age > max_age { bail!("Signal expired age={}s", age); }
 
-    let security = sqlx::query("SELECT status,expires_at FROM token_security WHERE token_address=?")
-        .bind(&token)
-        .fetch_optional(db)
-        .await?;
+    if cfg.live {
+        let security = sqlx::query("SELECT status,expires_at FROM token_security WHERE token_address=?")
+            .bind(&token)
+            .fetch_optional(db)
+            .await?;
 
-    let safe = security.map(|s| -> Result<bool> {
-        let status: String = s.try_get("status")?;
-        let expires: chrono::NaiveDateTime = s.try_get("expires_at")?;
-        Ok(status == "APPROVED" && expires > Utc::now().naive_utc())
-    })
-    .transpose()?
-    .unwrap_or(false);
+        let safe = security.map(|s| -> Result<bool> {
+            let status: String = s.try_get("status")?;
+            let expires: chrono::NaiveDateTime = s.try_get("expires_at")?;
+            Ok(status == "APPROVED" && expires > Utc::now().naive_utc())
+        })
+        .transpose()?
+        .unwrap_or(false);
 
-    if !safe { bail!("Token sem aprovação atualizada"); }
+        if !safe { bail!("Token without updated approval"); }
+    }
 
     let (buy_pool, sell_pool) = dex_router::resolve(db, &pool_a, &pool_b, price_a, price_b).await?;
     if buy_pool.token_address != token || buy_pool.quote_token_address != cfg.allowed_quote {

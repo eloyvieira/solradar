@@ -16,13 +16,16 @@ cargo check --workspace
 docker compose --env-file .env -f deploy/docker-compose.yml up -d --build collector
 docker compose --env-file .env -f deploy/docker-compose.yml up -d --build arbitrage-detector pump-detector
 docker compose --env-file .env -f deploy/docker-compose.yml up -d --build --force-recreate --no-deps collector
+docker compose --env-file .env -f deploy/docker-compose.yml up -d --build --force-recreate --no-deps executor
 docker compose --env-file .env -f deploy/docker-compose.yml up -d --build --force-recreate --no-deps arbitrage-detector pump-detector
+docker compose --env-file .env -f deploy/docker-compose.yml up -d --build --force-recreate --no-deps collector executor arbitrage-detector pump-detector
 
 docker compose -f deploy/docker-compose.yml restart collector
 docker compose -f deploy/docker-compose.yml stop collector
 
 docker compose --env-file .env -f deploy/docker-compose.yml ps
 docker compose --env-file .env -f deploy/docker-compose.yml logs -f collector
+docker compose --env-file .env -f deploy/docker-compose.yml logs -f executor
 docker compose --env-file .env -f deploy/docker-compose.yml logs -f rabbitmq
 docker compose --env-file .env -f deploy/docker-compose.yml logs -f arbitrage-detector pump-detector
 
