@@ -1,3 +1,5 @@
+mod pool_fees;
+mod network_fees;
 use anyhow::{Context,Result};
 use chrono::{TimeZone,Utc};
 use serde_json::Value;
@@ -382,8 +384,36 @@ async fn save(db:&MySqlPool,pool:&Value,tokens:&HashMap<String,(String,String)>,
     let seconds=config("SCAN_INTERVAL_SECONDS",60_u64).max(60);
     let client=reqwest::Client::builder().timeout(Duration::from_secs(25)).user_agent("solradar-collector/0.1").build()?;
     let mut timer=interval(Duration::from_secs(seconds));
-    timer.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
+    let rpc_url = std::env::var("SOLANA_RPC_URL").unwrap_or_else(|_| { "https://api.mainnet.solana.com".to_string() });
+    let fees_interval = config( "POOL_FEES_UPDATE_SECONDS", 1800_u64 );
+    let fees_spacing = config( "POOL_FEES_RPC_SPACING_MS", 300_u64 );
+    let fees_db = db.clone();
+    let fees_client = client.clone();
+    tokio::spawn(async move {
+        pool_fees::run(
+            fees_db,
+            fees_client,
+            rpc_url,
+            fees_interval,
+            fees_spacing,
+        ).await;
+    });
+
+    let network_db = db.clone();
+    let network_client = client.clone();
+    let network_rpc_url = std::env::var("SOLANA_RPC_URL") .unwrap_or_else(|_| { "https://api.mainnet.solana.com".to_string() });
+    let network_interval = config( "NETWORK_FEES_UPDATE_SECONDS", 60_u64 );
+    tokio::spawn(async move {
+        network_fees::run(
+            network_db,
+            network_client,
+            network_rpc_url,
+            network_interval,
+        ).await;
+    });
+
+    timer.set_missed_tick_behavior(MissedTickBehavior::Skip);
     loop{
         timer.tick().await;
         let mut saved=0;
