@@ -1,76 +1,80 @@
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use solana_sdk::{
     address_lookup_table::AddressLookupTableAccount,
+    compute_budget::ComputeBudgetInstruction,
     hash::Hash,
-    instruction::Instruction,
+    instruction::{AccountMeta, Instruction},
     message::{v0, VersionedMessage},
     pubkey::Pubkey,
     signature::Keypair,
     signer::Signer,
     transaction::VersionedTransaction,
 };
+use std::{collections::HashMap, str::FromStr};
+use crate::jupiter_v2::{ApiInstruction, BuildResponse};
 
-#[derive(Debug)]
-pub struct SwapInstructions {
-    pub instructions: Vec<Instruction>,
-    pub lookup_tables: Vec<AddressLookupTableAccount>,
+fn to_instruction(ix: &ApiInstruction) -> Result<Instruction> {
+    let keys = ix.accounts.iter().map(|a| {
+        let key = Pubkey::from_str(&a.pubkey)?;
+        Ok(if a.is_writable { AccountMeta::new(key, a.is_signer) }
+           else { AccountMeta::new_readonly(key, a.is_signer) })
+    }).collect::<Result<Vec<_>>>()?;
+    Ok(Instruction {
+        program_id: Pubkey::from_str(&ix.program_id)?,
+        accounts: keys,
+        data: STANDARD.decode(&ix.data).context("Jupiter Instruction: invalid base64")?,
+    })
 }
 
-pub struct AtomicArbitrageBuilder {
-    buy: SwapInstructions,
-    sell: SwapInstructions,
-}
+pub fn atomic_transaction(
+    buy: &BuildResponse,
+    sell: &BuildResponse,
+    wallet: &Keypair,
+    blockhash: Hash,
+    compute_unit_limit: u32,
+    compute_unit_price_micro_lamports: u64,
+) -> Result<VersionedTransaction> {
 
-impl AtomicArbitrageBuilder {
-    pub fn new(
-        buy: SwapInstructions,
-        sell: SwapInstructions,
-    ) -> Result<Self> {
-        if buy.instructions.is_empty() {
-            bail!("Swap buy without instructions");
-        }
-
-        if sell.instructions.is_empty() {
-            bail!("Swap sell without instructions");
-        }
-        Ok(Self { buy, sell })
+    if buy.cleanup_instruction.is_some() || sell.cleanup_instruction.is_some() {
+        bail!("Route with cleanupInstruction: composition not yet validated; rejected");
     }
+    if !buy.other_instructions.is_empty() || !sell.other_instructions.is_empty() {
+        bail!("Route with otherInstructions: composition not yet validated; rejected");
+    }
+    if compute_unit_limit == 0 || compute_unit_limit > 1_400_000 {
+        bail!("Compute units invalid");
+    }
+    let mut ixs = vec![
+        ComputeBudgetInstruction::set_compute_unit_limit(compute_unit_limit),
+        ComputeBudgetInstruction::set_compute_unit_price(compute_unit_price_micro_lamports),
+    ];
+    for ix in &buy.setup_instructions { ixs.push(to_instruction(ix)?); }
+    ixs.push(to_instruction(&buy.swap_instruction)?);
+    for ix in &sell.setup_instructions { ixs.push(to_instruction(ix)?); }
+    ixs.push(to_instruction(&sell.swap_instruction)?);
 
-    pub fn build(
-        self,
-        payer: &Keypair,
-        recent_blockhash: Hash,
-    ) -> Result<VersionedTransaction> {
-        let mut instructions = Vec::new();
-
-        // mandatory order:
-        // first buy, then sell.
-        instructions.extend(self.buy.instructions);
-        instructions.extend(self.sell.instructions);
-
-        // consolidate address lookup tables
-        let mut lookup_tables = self.buy.lookup_tables;
-        for table in self.sell.lookup_tables {
-            if !lookup_tables
-                .iter()
-                .any(|existing| existing.key == table.key)
-            {
-                lookup_tables.push(table);
+    let mut tables: HashMap<String, Vec<String>> = HashMap::new();
+    for response in [buy, sell] {
+        if let Some(addrs) = &response.addresses_by_lookup_table_address {
+            for (key, addresses) in addrs {
+                if let Some(existing) = tables.get(key) {
+                    if existing != addresses { bail!("Lookup table contraditória: {}", key); }
+                } else { tables.insert(key.clone(), addresses.clone()); }
             }
         }
-
-        let payer_pubkey: Pubkey = payer.pubkey();
-        let message = v0::Message::try_compile(
-            &payer_pubkey,
-            &instructions,
-            &lookup_tables,
-            recent_blockhash,
-        )?;
-        let transaction = VersionedTransaction::try_new(
-            VersionedMessage::V0(message),
-            &[payer],
-        )?;
-
-        Ok(transaction)
     }
+    let lookup_tables = tables.into_iter().map(|(key, addresses)| {
+        Ok(AddressLookupTableAccount {
+            key: Pubkey::from_str(&key)?,
+            addresses: addresses.iter().map(|s| Pubkey::from_str(s))
+                .collect::<std::result::Result<Vec<_>, _>>()?,
+        })
+    }).collect::<Result<Vec<_>>>()?;
+    let msg = v0::Message::try_compile(&wallet.pubkey(), &ixs, &lookup_tables, blockhash)?;
+    let tx = VersionedTransaction::try_new(VersionedMessage::V0(msg), &[wallet])?;
+
+    let wire = bincode::serialize(&tx)?;
+    if wire.len() > 1232 { bail!("v0 transaction too large: {} bytes", wire.len()); }
+    Ok(tx)
 }

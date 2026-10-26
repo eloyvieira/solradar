@@ -44,6 +44,8 @@ services:
   executor:
     <<: *service
     command: executor
+    volumes:
+      - ${HOME}/solradar/secrets/solana-wallet.json:/run/secrets/solana-wallet.json:ro
 
   position-monitor:
     <<: *service
