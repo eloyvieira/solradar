@@ -108,5 +108,17 @@ pub async fn build(
     if !status.is_success() {
         bail!("Jupiter /build HTTP {}: {}", status, response.text().await.unwrap_or_default());
     }
-    response.json::<BuildResponse>().await.context("JSON /build invalid")
+    
+    let body = response.text().await?;
+    match serde_json::from_str::<BuildResponse>(&body) {
+        Ok(data) => Ok(data),
+        Err(err) => {
+            bail!(
+                "JSON /build invalid: {} | response: {}",
+                err,
+                body.chars().take(4000).collect::<String>()
+            );
+        }
+    }
+
 }

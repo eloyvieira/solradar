@@ -174,6 +174,7 @@ async fn process(db: &MySqlPool, cfg: &Runtime, sig: Signal) -> Result<()> {
         let wallet_address = cfg.wallet.pubkey().to_string();
         log_step( db, &sig.id, Some(&order_id), "BUY_QUOTE_REQUEST", "STARTED",
             Some(&serde_json::json!({
+                "wallet_address": wallet_address,
                 "input_mint": cfg.allowed_quote,
                 "output_mint": token,
                 "amount_raw": cfg.amount_raw,
