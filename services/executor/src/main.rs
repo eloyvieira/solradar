@@ -5,7 +5,7 @@ mod transaction_builder;
 use anyhow::{bail, Context, Result};
 use chrono::Utc;
 use futures_util::StreamExt;
-use lapin::options::{BasicAckOptions, BasicConsumeOptions, BasicNackOptions, BasicQosOptions};
+use lapin::options::{BasicAckOptions, BasicConsumeOptions, BasicQosOptions};
 use solradar_common::{channel, config, database, Signal};
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::{signature::read_keypair_file, signer::Signer};
@@ -195,14 +195,14 @@ async fn process(db: &MySqlPool, cfg: &Runtime, sig: Signal) -> Result<()> {
                 "min_out": buy.min_out()?
             }).to_string()),
         ).await?;
-        let verification = buy.verify_exact_pool(&buy_pool.pool_address, &cfg.allowed_quote, &token, cfg.amount_raw)?;
+        let verification = buy.verify_exact_pool(&buy_pool.pool_address, &cfg.allowed_quote, &token, cfg.amount_raw);
         log_step( db, &sig.id, Some(&order_id), "BUY_POOL_VALIDATION", if verification.is_ok() { "OK" } else { "ERROR" },
             Some(&serde_json::json!({
-                "pool": buy_pool.pool_address,
-                "min_out": buy.min_out()?,
+                "expected_pool": buy_pool.pool_address,
                 "result": format!("{:?}", verification)
             }).to_string()),
         ).await?;
+        verification?;
 
         // sells the MINIMUM amount promised by the first swap; 
         // never assumes that the optimistic outAmount will be available.
@@ -230,13 +230,14 @@ async fn process(db: &MySqlPool, cfg: &Runtime, sig: Signal) -> Result<()> {
                 "min_out": sell.min_out()?
             }).to_string()),
         ).await?;
-        sell.verify_exact_pool(&sell_pool.pool_address, &token, &cfg.allowed_quote, buy_min)?;
+        let verification = sell.verify_exact_pool(&sell_pool.pool_address, &token, &cfg.allowed_quote, buy_min)?;
         log_step( db, &sig.id, Some(&order_id), "SELL_POOL_VALIDATION", if verification.is_ok() { "OK" } else { "ERROR" },
             Some(&serde_json::json!({
                 "expected_pool": sell_pool.pool_address,
                 "result": format!("{:?}", verification)
             }).to_string()),
         ).await?;
+        verification?;
 
         // check the min amount
         let min_received = sell.min_out()?;
