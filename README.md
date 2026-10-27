@@ -1,70 +1,66 @@
-# SolRadar 
+# SolRadar
+
+SolRadar is an experimental algorithmic trading project for the **Solana blockchain**, built with **Rust** and a microservices architecture.
+
+The project focuses on monitoring liquidity pools, detecting arbitrage opportunities and market movements, and developing automated trading strategies.
+
+**Status:** Work in Progress (WIP) — Under active development.
+
+## Tech Stack
+
+- Rust
+- Solana RPC
+- Jupiter API
+- RabbitMQ
+- MySQL
+- Docker / Docker Compose
+
+## Architecture
+
+```text
+         SOLANA / GECKOTERMINAL
+                  |
+               COLLECTOR
+                  |
+               RabbitMQ
+                  |
+       +----------+----------+
+       |                     |
+ ARBITRAGE DETECTOR     PUMP DETECTOR
+       |                     |
+       +----------+----------+
+                  |
+           SECURITY CHECK
+                  |
+               EXECUTOR
+                  |
+              SOLANA RPC
+                  |
+       +----------+----------+
+       |                     |
+ POSITION MONITOR       TRADE LEDGER
+```
+
+## Getting Started
 
 ```bash
 cp .env.example .env
 bash scripts/start.sh
-bash scripts/logs.sh collector pump-detector security-analyzer
-bash scripts/healthcheck.sh
 ```
+
+## Development
 
 ```bash
-cargo test --workspace
 cargo check --workspace
-# ou bash scripts/check.sh
+cargo test --workspace
 ```
 
-docker compose --env-file .env -f deploy/docker-compose.yml up -d --build collector
-docker compose --env-file .env -f deploy/docker-compose.yml up -d --build arbitrage-detector pump-detector
-docker compose --env-file .env -f deploy/docker-compose.yml up -d --build --force-recreate --no-deps collector
-docker compose --env-file .env -f deploy/docker-compose.yml up -d --build --force-recreate --no-deps executor
-docker compose --env-file .env -f deploy/docker-compose.yml up -d --build --force-recreate --no-deps arbitrage-detector pump-detector
-docker compose --env-file .env -f deploy/docker-compose.yml up -d --build --force-recreate --no-deps collector executor arbitrage-detector pump-detector
+## Logs
 
-docker compose -f deploy/docker-compose.yml restart collector
-docker compose -f deploy/docker-compose.yml stop collector
+```bash
+bash scripts/logs.sh collector arbitrage-detector pump-detector executor
+```
 
-docker compose --env-file .env -f deploy/docker-compose.yml ps
-docker compose --env-file .env -f deploy/docker-compose.yml logs -f collector
-docker compose --env-file .env -f deploy/docker-compose.yml logs -f executor
-docker compose --env-file .env -f deploy/docker-compose.yml logs -f rabbitmq
-docker compose --env-file .env -f deploy/docker-compose.yml logs -f arbitrage-detector pump-detector
+## Disclaimer
 
-
-
-        SOLANA / GECKOTERMINAL
-                  |
-                  v
-              COLLECTOR
-                  |
-             RabbitMQ
-                  |
-      +-----------+-----------+
-      |                       |
-      v                       v
-ARBITRAGE DETECTOR        PUMP DETECTOR
-      |                       |
-      +-----------+-----------+
-                  |
-                  v
-          SECURITY CHECK <--------+
-                  |               |
-                  |          MySQL
-                  |               ^
-                  |               |
-                  |       SECURITY ANALYZER
-                  |               ^
-                  v               |
-               EXECUTOR           |
-                  |               |
-            SOLANA RPC       SOLANA RPC
-                  |
-         +--------+--------+
-         |                 |
-         v                 v
-  POSITION MONITOR     TRADE LEDGER
-         |
-    Trailing Stop
-         |
-         v
-      EXECUTOR
-  (Venda da posição)
+This project is under development and is not ready for production trading.
