@@ -26,6 +26,39 @@ struct Runtime {
     live: bool,
 }
 
+static CFG_JSON: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    serde_json::to_string(
+        &std::env::vars()
+            .collect::<std::collections::HashMap<String, String>>()
+    ).unwrap()
+});
+
+async fn log_step(
+    db: &MySqlPool,
+    signal_id: &str,
+    order_id: Option<&str>,
+    step: &str,
+    status: &str,
+    details: Option<&str>,
+) -> Result<()> {
+    sqlx::query(
+        r#"
+        INSERT INTO trade_order_logs
+            (signal_id, order_id, step, status, details, created_at)
+        VALUES (?, ?, ?, ?, ?, UTC_TIMESTAMP(6))
+        "#
+    )
+    .bind(signal_id)
+    .bind(order_id)
+    .bind(step)
+    .bind(status)
+    .bind(details)
+    .execute(db)
+    .await?;
+
+    Ok(())
+}
+
 async fn update(db: &MySqlPool, order: &str, signal: &str, status: &str, signature: Option<&str>, error: Option<&str>) -> Result<()> {
     sqlx::query("UPDATE trade_orders SET status=?, tx_signature=?, error_message=? WHERE id=?")
         .bind(status)
@@ -45,6 +78,11 @@ async fn update(db: &MySqlPool, order: &str, signal: &str, status: &str, signatu
 }
 
 async fn process(db: &MySqlPool, cfg: &Runtime, sig: Signal) -> Result<()> {
+
+    log_step( db, &sig.id, None,  "SIGNAL_RECEIVED", "STARTED",
+        Some(CFG_JSON.as_str()),
+    ).await?;
+
     if sig.strategy != "ARBITRAGE" { 
         bail!("A message is not arbitration"); 
     }
@@ -81,14 +119,29 @@ async fn process(db: &MySqlPool, cfg: &Runtime, sig: Signal) -> Result<()> {
         })
         .transpose()?
         .unwrap_or(false);
-
         if !safe { bail!("Token without updated approval"); }
     }
 
+
+    log_step( db, &sig.id, None, "POOLS_RESOLVING", "STARTED",
+        Some(&serde_json::json!({
+            "pool_a": pool_a,
+            "pool_b": pool_b,
+            "price_a": price_a,
+            "price_b": price_b,
+            "token": token
+        }).to_string()),
+    ).await?;
     let (buy_pool, sell_pool) = dex_router::resolve(db, &pool_a, &pool_b, price_a, price_b).await?;
     if buy_pool.token_address != token || buy_pool.quote_token_address != cfg.allowed_quote {
         bail!("Pair differs from the configured token/quote");
     }
+    log_step( db, &sig.id, None, "POOLS_RESOLVED", "OK",
+        Some(&serde_json::json!({
+            "buy_pool": buy_pool.pool_address,
+            "sell_pool": sell_pool.pool_address
+        }).to_string()),
+    ).await?;
 
     // Simple claim via the UNIQUE(signal_id) index. Still requires persistent
     // reconciliation of orders in SUBMITTING/UNKNOWN state before operating in production.
@@ -104,10 +157,30 @@ async fn process(db: &MySqlPool, cfg: &Runtime, sig: Signal) -> Result<()> {
         .execute(db)
         .await?;
     if insert.rows_affected() == 0 { return Ok(()); }
+    log_step( db, &sig.id, Some(&order_id), "ORDER_CREATED", "OK",
+        Some(&serde_json::json!({
+            "id": order_id,
+            "signal_id": sig.id,
+            "token": token,
+            "pool": pool_a,
+            "mode": if cfg.live { "LIVE" } else { "PAPER" },
+            "status": "PROCESSING"
+        }).to_string()),
+    ).await?;
+
 
     let result: Result<()> = async {
 
         let wallet_address = cfg.wallet.pubkey().to_string();
+        log_step( db, &sig.id, Some(&order_id), "BUY_QUOTE_REQUEST", "STARTED",
+            Some(&serde_json::json!({
+                "input_mint": cfg.allowed_quote,
+                "output_mint": token,
+                "amount_raw": cfg.amount_raw,
+                "slippage_bps": cfg.slippage_bps,
+                "expected_pool": buy_pool.pool_address
+            }).to_string()),
+        ).await?;
         let buy = jupiter_v2::build(
             &cfg.http, 
             &cfg.api_key, 
@@ -117,11 +190,32 @@ async fn process(db: &MySqlPool, cfg: &Runtime, sig: Signal) -> Result<()> {
             cfg.amount_raw, 
             cfg.slippage_bps,
         ).await?;
-        buy.verify_exact_pool(&buy_pool.pool_address, &cfg.allowed_quote, &token, cfg.amount_raw)?;
+        log_step( db, &sig.id, Some(&order_id), "BUY_QUOTE_RECEIVED", "OK",
+            Some(&serde_json::json!({
+                "min_out": buy.min_out()?
+            }).to_string()),
+        ).await?;
+        let verification = buy.verify_exact_pool(&buy_pool.pool_address, &cfg.allowed_quote, &token, cfg.amount_raw)?;
+        log_step( db, &sig.id, Some(&order_id), "BUY_POOL_VALIDATION", if verification.is_ok() { "OK" } else { "ERROR" },
+            Some(&serde_json::json!({
+                "pool": buy_pool.pool_address,
+                "min_out": buy.min_out()?,
+                "result": format!("{:?}", verification)
+            }).to_string()),
+        ).await?;
 
         // sells the MINIMUM amount promised by the first swap; 
         // never assumes that the optimistic outAmount will be available.
         let buy_min = buy.min_out()?;
+        log_step( db, &sig.id, Some(&order_id), "SELL_QUOTE_REQUEST", "STARTED",
+            Some(&serde_json::json!({
+                "input_mint": token,
+                "output_mint": cfg.allowed_quote,
+                "amount_raw": buy_min,
+                "slippage_bps": cfg.slippage_bps,
+                "expected_pool": sell_pool.pool_address
+            }).to_string()),
+        ).await?;
         let sell = jupiter_v2::build(
             &cfg.http, 
             &cfg.api_key, 
@@ -131,8 +225,20 @@ async fn process(db: &MySqlPool, cfg: &Runtime, sig: Signal) -> Result<()> {
             buy_min, 
             cfg.slippage_bps,
         ).await?;
+        log_step( db, &sig.id, Some(&order_id), "SELL_QUOTE_RECEIVED", "OK",
+            Some(&serde_json::json!({
+                "min_out": sell.min_out()?
+            }).to_string()),
+        ).await?;
         sell.verify_exact_pool(&sell_pool.pool_address, &token, &cfg.allowed_quote, buy_min)?;
+        log_step( db, &sig.id, Some(&order_id), "SELL_POOL_VALIDATION", if verification.is_ok() { "OK" } else { "ERROR" },
+            Some(&serde_json::json!({
+                "expected_pool": sell_pool.pool_address,
+                "result": format!("{:?}", verification)
+            }).to_string()),
+        ).await?;
 
+        // check the min amount
         let min_received = sell.min_out()?;
         let min_required = cfg.amount_raw
             .checked_add(cfg.min_profit_raw)
@@ -154,6 +260,13 @@ async fn process(db: &MySqlPool, cfg: &Runtime, sig: Signal) -> Result<()> {
         let blockhash = cfg.rpc.get_latest_blockhash().await?;
         let compute_limit: u32 = config("ARBITRAGE_COMPUTE_UNIT_LIMIT", 1_300_000_u32);
         let cu_price: u64 = config("ARBITRAGE_CU_PRICE_MICROLAMPORTS", 0_u64);
+        log_step( db, &sig.id, Some(&order_id), "TX_BUILD", "STARTED",
+            Some(&serde_json::json!({
+                "blockhash": blockhash.to_string(),
+                "compute_limit": compute_limit,
+                "cu_price": cu_price
+            }).to_string()),
+        ).await?;
         let tx = transaction_builder::atomic_transaction(
             &buy, 
             &sell, 
@@ -162,12 +275,35 @@ async fn process(db: &MySqlPool, cfg: &Runtime, sig: Signal) -> Result<()> {
             compute_limit, 
             cu_price,
         )?;
+        log_step( db, &sig.id, Some(&order_id), "TX_BUILD", "OK",
+            Some(&serde_json::json!({
+                "signature": tx.signatures.first().map(|s| s.to_string())
+            }).to_string()),
+        ).await?;
+        log_step( db, &sig.id, Some(&order_id), "TX_SIMULATION", "STARTED",
+            None,
+        ).await?;
         let sim = cfg.rpc.simulate_transaction(&tx).await?;
+        let sim_status = if sim.value.err.is_some() { "ERROR" } else { "OK" };
+        log_step( db, &sig.id, Some(&order_id), "TX_SIMULATION", sim_status,
+            Some(&serde_json::json!({
+                "error": sim.value.err,
+                "logs": sim.value.logs,
+                "units_consumed": sim.value.units_consumed
+            }).to_string()),
+        ).await?;
         if let Some(err) = sim.value.err {
             bail!("Simulation rejected: {:?} logs={:?}", err, sim.value.logs);
         }
         if !cfg.live {
             update(db, &order_id, &sig.id, "SIMULATED", None, None).await?;
+            log_step( db, &sig.id, Some(&order_id), "ORDER_SIMULATED", "OK",
+                Some(&serde_json::json!({
+                    "mode": "PAPER",
+                    "status": "SIMULATED",
+                    "transaction_sent": false
+                }).to_string()),
+            ).await?;
             return Ok(());
         }
 
@@ -175,14 +311,33 @@ async fn process(db: &MySqlPool, cfg: &Runtime, sig: Signal) -> Result<()> {
         // prevent automatic redelivery following a send timeout.
         let signature = tx.signatures.first().context("missing signature")?.to_string();
         update(db, &order_id, &sig.id, "SUBMITTING", Some(&signature), None).await?;
+        log_step( db, &sig.id, Some(&order_id), "TX_SUBMITTING", "STARTED",
+            Some(&serde_json::json!({
+                "signature": signature,
+                "mode": "LIVE"
+            }).to_string()),
+        ).await?;
         match cfg.rpc.send_and_confirm_transaction(&tx).await {
             Ok(confirmed) => {
                 update(db, &order_id, &sig.id, "CONFIRMED", Some(&confirmed.to_string()), None).await?;
+                log_step( db, &sig.id, Some(&order_id),  "TX_CONFIRMED", "OK",
+                    Some(&serde_json::json!({
+                        "signature": confirmed.to_string(),
+                        "status": "CONFIRMED"
+                    }).to_string()),
+                ).await?;
             }
             Err(err) => {
                 // it may have already been sent: do not automatically repeat.
                 update(db, &order_id, &sig.id, "UNKNOWN", Some(&signature), Some(&err.to_string())).await?;
                 eprintln!("TX UNKNOWN signature={} error={}", signature, err);
+                log_step( db, &sig.id, Some(&order_id), "TX_UNKNOWN", "ERROR",
+                    Some(&serde_json::json!({
+                        "signature": signature,
+                        "error": err.to_string(),
+                        "status": "UNKNOWN"
+                    }).to_string()),
+                ).await?;
             }
         }
         Ok(())
