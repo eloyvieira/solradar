@@ -230,7 +230,7 @@ async fn process(db: &MySqlPool, cfg: &Runtime, sig: Signal) -> Result<()> {
                 "min_out": sell.min_out()?
             }).to_string()),
         ).await?;
-        let verification = sell.verify_exact_pool(&sell_pool.pool_address, &token, &cfg.allowed_quote, buy_min)?;
+        let verification = sell.verify_exact_pool(&sell_pool.pool_address, &token, &cfg.allowed_quote, buy_min);
         log_step( db, &sig.id, Some(&order_id), "SELL_POOL_VALIDATION", if verification.is_ok() { "OK" } else { "ERROR" },
             Some(&serde_json::json!({
                 "expected_pool": sell_pool.pool_address,
