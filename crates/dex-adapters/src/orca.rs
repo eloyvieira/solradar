@@ -1,5 +1,5 @@
-use anyhow::{bail, Context, Result};
-use orca_whirlpools::{swap_instructions, SwapConfig, SwapQuote, SwapType};
+use anyhow::{bail, Context, Result};;
+use orca_whirlpools::{swap_instructions, SwapQuote, SwapType};
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::{instruction::Instruction, pubkey::Pubkey};
 use std::str::FromStr;
@@ -36,14 +36,11 @@ impl OrcaAdapter {
             request.amount_in_atomic,
             input_mint,
             SwapType::ExactIn,
-            SwapConfig {
-                slippage_tolerance_bps: Some(slippage_bps),
-                signer: Some(wallet),
-                ..Default::default()
-            },
+            Some(slippage_bps),
+            Some(wallet),
         )
         .await
-        .map_err(|err| anyhow::anyhow!("Orca swap build failed: {err}"))?;
+        .map_err(|e| anyhow::anyhow!("Orca swap_instructions: {}", e))?;
 
         if !result.additional_signers.is_empty() {
             bail!("Orca requires additional signers: account handling not yet integrated");
