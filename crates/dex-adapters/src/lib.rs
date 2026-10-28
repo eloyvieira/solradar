@@ -1,6 +1,7 @@
 use anyhow::{bail, Result};
 
 pub mod orca;
+pub mod raydium_clmm;
 
 #[derive(Debug,Clone)] pub struct SwapRequest {
     pub pool_address:String,
