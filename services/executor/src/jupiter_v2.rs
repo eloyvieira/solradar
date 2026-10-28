@@ -33,7 +33,7 @@ pub struct RouteHop {
     #[serde(default)]
     pub bps: Option<u32>,
     #[serde(default)]
-    pub percent: Option<u32>,
+    pub percent: Option<f64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -69,7 +69,7 @@ impl BuildResponse {
         if hop.swap_info.amm_key != pool || hop.swap_info.input_mint != input || hop.swap_info.output_mint != output {
             bail!("Jupiter selected a different pool than {}", pool);
         }
-        if hop.bps != Some(10_000) && hop.percent != Some(100) {
+        if hop.bps != Some(10_000) && hop.percent != Some(100.0) {
             bail!("Route percentage is not 100%");
         }
         if self.min_out()? == 0 { bail!("Quote with a minimum departure requirement of zero"); }
@@ -100,6 +100,7 @@ pub async fn build(
             ("amount", amount_str.as_str()), 
             ("taker", wallet),
             ("slippageBps", slippage.as_str()),
+            ("dexes", "Whirlpool"),
         ])
         .send()
         .await
