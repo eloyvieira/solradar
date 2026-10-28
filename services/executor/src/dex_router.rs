@@ -1,6 +1,18 @@
 use anyhow::{bail, Result};
 use sqlx::{MySqlPool, Row};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DexType {
+    Orca,
+}
+
+pub fn get_adapter(dex_id: &str) -> Result<DexType> {
+    match dex_id {
+        "orca" => Ok(DexType::Orca),
+        _ => bail!("DEX adapter not implemented: {}", dex_id),
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct PoolInfo {
     pub pool_address: String,

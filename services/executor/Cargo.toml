@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 solradar-common = { path = "../../crates/common" }
+solradar-dex-adapters = { path = "../../crates/dex-adapters" }
 anyhow.workspace = true
 chrono.workspace = true
 dotenvy.workspace = true

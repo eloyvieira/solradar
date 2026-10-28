@@ -5,3 +5,6 @@ edition="2021"
 
 [dependencies]
 anyhow = { workspace = true }
+orca_whirlpools = "=5.0.2"
+solana-client = "2.3"
+solana-sdk = "2.3"
