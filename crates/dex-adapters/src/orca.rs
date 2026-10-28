@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Result};;
+use anyhow::{bail, Context, Result};
 use orca_whirlpools::{swap_instructions, SwapQuote, SwapType};
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::{instruction::Instruction, pubkey::Pubkey};
