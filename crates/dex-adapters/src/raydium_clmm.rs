@@ -28,12 +28,12 @@ pub struct PoolState {
 }
 
 fn pubkey_at(data: &[u8], start: usize) -> Result<Pubkey> {
-    let bytes: [u8; 32] = data.get(start..start + 32).context("Truncated pool pubkey")?.try_into()?;
-    Ok(Pubkey::new_from_array(bytes))
+	let bytes: [u8; 32] = data.get(start..start + 32).context("Truncated pool pubkey")?.try_into()?;
+	Ok(Pubkey::new_from_array(bytes))
 }
 
 fn u16_at(data: &[u8], start: usize) -> Result<u16> {
-    Ok(u16::from_le_bytes(data.get(start..start + 2).context("Truncated pool u16")?.try_into()?))
+	Ok(u16::from_le_bytes(data.get(start..start + 2).context("Truncated pool u16")?.try_into()?))
 }
 
 fn u128_at(data: &[u8], start: usize) -> Result<u128> {
@@ -55,7 +55,7 @@ pub async fn load_pool_state(rpc: &RpcClient, address: Pubkey) -> Result<PoolSta
     if account.owner != raydium_program_id()? {
         bail!("Pool {address} is not owned by Raydium CLMM (owner={})", account.owner);
     }
-    
+
     let d = &account.data;
     if d.len() < 273 || d.get(0..8) != Some(POOL_DISCRIMINATOR.as_slice()) {
         bail!("Invalid or truncated Raydium CLMM PoolState: {address}");

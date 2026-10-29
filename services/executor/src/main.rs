@@ -8,7 +8,10 @@ use lapin::options::{BasicAckOptions, BasicConsumeOptions, BasicQosOptions};
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::{signature::read_keypair_file, signer::Signer};
 use solradar_common::{channel, config, database, Signal};
-use solradar_dex_adapters::{orca::OrcaAdapter, SwapRequest};
+use solradar_dex_adapters::{orca::OrcaAdapter, Quote, SwapRequest};
+use solradar_dex_adapters::raydium_clmm;
+use solana_sdk::{instruction::Instruction, pubkey::Pubkey};
+use std::str::FromStr;
 use sqlx::{MySqlPool, Row};
 use std::{env, sync::Arc};
 use uuid::Uuid;
@@ -51,6 +54,55 @@ async fn update(db: &MySqlPool, order: &str, signal: &str, status: &str, signatu
         .execute(db)
         .await?;
     Ok(())
+}
+
+// Single representation of a swap regardless of the DEX protocol.
+struct BuiltSwap {
+    quote: Quote,
+    instructions: Vec<Instruction>,
+}
+
+async fn build_swap(
+    cfg: &Runtime,
+    dex_id: &str,
+    request: &SwapRequest,
+) -> Result<BuiltSwap> {
+    match dex_router::get_adapter(dex_id)? {
+        dex_router::DexType::Orca => {
+            let swap = OrcaAdapter
+                .build_exact_in(
+                    &cfg.rpc,
+                    request,
+                    cfg.wallet.pubkey(),
+                    cfg.slippage_bps,
+                )
+                .await?;
+            Ok(BuiltSwap {
+                quote: swap.quote,
+                instructions: swap.instructions,
+            })
+        }
+        dex_router::DexType::RaydiumClmm => {
+            // Validate on-chain ownership before rejecting the incomplete swap.
+            // The current Raydium adapter only provides load_pool_state()
+            // and build_swap_v2(). It does NOT compute executable quotes or
+            // fetch/sequence initialized tick arrays.
+            let pool = Pubkey::from_str(&request.pool_address)
+                .context("Invalid Raydium CLMM pool address")?;
+            let state = raydium_clmm::load_pool_state(&cfg.rpc, pool).await?;
+            let mint_in = Pubkey::from_str(&request.mint_in)?;
+            let mint_out = Pubkey::from_str(&request.mint_out)?;
+            if !((mint_in == state.mint_0 && mint_out == state.mint_1)
+                || (mint_in == state.mint_1 && mint_out == state.mint_0))
+            {
+                bail!("Raydium CLMM pool {} does not trade {}/{}", pool, mint_in, mint_out);
+            }
+            bail!(
+                "Raydium CLMM pool {} validated on-chain, but executable quote and tick-array discovery are not implemented; atomic swap blocked",
+                pool
+            );
+        }
+    }
 }
 
 async fn process(db: &MySqlPool, cfg: &Runtime, sig: Signal) -> Result<()> {
@@ -97,48 +149,46 @@ async fn process(db: &MySqlPool, cfg: &Runtime, sig: Signal) -> Result<()> {
         .await?;
     if insert.rows_affected() == 0 { return Ok(()); }
 
-    log_step(db,&sig.id,Some(&order_id),"ORDER_CREATED","OK",Some("Orca atomic simulation only; no network submission")).await?;
-
+    log_step(db, &sig.id, Some(&order_id), "ORDER_CREATED", "OK",
+        Some(&serde_json::json!({
+            "mode": "PAPER", "sent": false,
+            "buy": {"pool": buy_pool.pool_address, "dex": buy_pool.dex_id},
+            "sell": {"pool": sell_pool.pool_address, "dex": sell_pool.dex_id}
+        }).to_string())).await?;
     let result: Result<()> = async {
-        let adapter = OrcaAdapter;
         let request = SwapRequest {
             pool_address: buy_pool.pool_address.clone(),
             mint_in: cfg.allowed_quote.clone(), mint_out: token.clone(),
             amount_in_atomic: cfg.amount_raw,
         };
-
-        log_step(db,&sig.id,Some(&order_id),"ORCA_BUY_BUILD","STARTED",Some(&request.pool_address)).await?;
-        let buy = adapter.build_exact_in(&cfg.rpc,&request,cfg.wallet.pubkey(),cfg.slippage_bps).await?;
-
-        log_step(db,&sig.id,Some(&order_id),"ORCA_BUY_QUOTE","OK",Some(&serde_json::json!({
+        log_step(db,&sig.id,Some(&order_id),"DEX_BUY_BUILD","STARTED",Some(&serde_json::json!({"pool":request.pool_address,"dex":buy_pool.dex_id}).to_string())).await?;
+        let buy = build_swap(cfg, &buy_pool.dex_id, &request).await?;
+        log_step(db,&sig.id,Some(&order_id),"DEX_BUY_QUOTE","OK",Some(&serde_json::json!({
             "min_out":buy.quote.minimum_out_atomic,
             "expected_out":buy.quote.amount_out_atomic,
             "slot":buy.quote.slot
         }).to_string())).await?;
         let buy_min = buy.quote.minimum_out_atomic;
+
         let sell_request = SwapRequest {
             pool_address: sell_pool.pool_address.clone(),
             mint_in: token.clone(), mint_out: cfg.allowed_quote.clone(),
             amount_in_atomic: buy_min,
         };
-
-        log_step(db,&sig.id,Some(&order_id),"ORCA_SELL_BUILD","STARTED",Some(&sell_request.pool_address)).await?;
-        let sell = adapter.build_exact_in(&cfg.rpc,&sell_request,cfg.wallet.pubkey(),cfg.slippage_bps).await?;
-
-        log_step(db,&sig.id,Some(&order_id),"ORCA_SELL_QUOTE","OK",Some(&serde_json::json!({
+        log_step(db,&sig.id,Some(&order_id),"DEX_SELL_BUILD","STARTED",Some(&serde_json::json!({"pool":sell_request.pool_address,"dex":sell_pool.dex_id}).to_string())).await?;
+        let sell = build_swap(cfg, &sell_pool.dex_id, &sell_request).await?;
+        log_step(db,&sig.id,Some(&order_id),"DEX_SELL_QUOTE","OK",Some(&serde_json::json!({
             "min_out":sell.quote.minimum_out_atomic,
             "expected_out":sell.quote.amount_out_atomic,
             "slot":sell.quote.slot
-        })
-        .to_string()))
-        .await?;
+        }).to_string())).await?;
 
-        let blockhash = cfg.rpc.get_latest_blockhash().await?;
         let min_out = sell.quote.minimum_out_atomic;
         if min_out <= cfg.amount_raw && !cfg.simulate_ignore_profit {
             bail!("Worst-case unprofitable: input={} return={}; set ORCA_TEST_IGNORE_PROFIT=true for simulation only",cfg.amount_raw,min_out);
         }
 
+        let blockhash = cfg.rpc.get_latest_blockhash().await?;
         log_step(db,&sig.id,Some(&order_id),"ATOMIC_TX_BUILD","STARTED",None).await?;
         let tx = transaction_builder::atomic_transaction(
             &buy.instructions,
@@ -153,10 +203,7 @@ async fn process(db: &MySqlPool, cfg: &Runtime, sig: Signal) -> Result<()> {
             "signature":tx.signatures.first().map(|v|v.to_string()),
             "buy_ixs":buy.instructions.len(),
             "sell_ixs":sell.instructions.len()
-        })
-        .to_string()))
-        .await?;
-        
+        }).to_string())).await?;
         let sim = cfg.rpc.simulate_transaction(&tx).await?;
         let error = sim.value.err.as_ref().map(|e|format!("{e:?}"));
         log_step(db,&sig.id,Some(&order_id),"ATOMIC_SIMULATION",if error.is_some(){"ERROR"}else{"OK"},Some(&serde_json::json!({
@@ -166,9 +213,7 @@ async fn process(db: &MySqlPool, cfg: &Runtime, sig: Signal) -> Result<()> {
             "input_atomic":cfg.amount_raw,
             "minimum_final_atomic":min_out,
             "sent":false
-        })
-        .to_string()))
-        .await?;
+        }).to_string())).await?;
 
         if let Some(err)=error { 
             bail!("Atomic simulation failed: {err}"); 
@@ -182,7 +227,6 @@ async fn process(db: &MySqlPool, cfg: &Runtime, sig: Signal) -> Result<()> {
                         .bind(&order_id)
                         .fetch_one(db)
                         .await?;
-
         let current: String = row.try_get("status")?;
         if current=="PROCESSING" {
             update(db,&order_id,&sig.id,"REJECTED",None,Some(&e.to_string())).await?;
@@ -196,7 +240,7 @@ async fn process(db: &MySqlPool, cfg: &Runtime, sig: Signal) -> Result<()> {
 async fn main()->Result<()> {
     solradar_common::init();
     if env::var("ARBITRAGE_LIVE_ENABLED").as_deref()==Ok("true") {
-        bail!("LIVE disabled in Orca atomic simulation prototype");
+        bail!("LIVE disabled in cross-DEX atomic simulation prototype");
     }
     let cfg=Arc::new(Runtime {
         rpc: RpcClient::new(env::var("SOLANA_RPC_URL").context("SOLANA_RPC_URL required")?),
@@ -206,17 +250,18 @@ async fn main()->Result<()> {
         slippage_bps: config("ARBITRAGE_SLIPPAGE_BPS",30_u16),
         compute_limit: config("ARBITRAGE_COMPUTE_UNIT_LIMIT",1_300_000_u32),
         compute_price: config("ARBITRAGE_CU_PRICE_MICROLAMPORTS",0_u64),
-        simulate_ignore_profit: env::var("ORCA_TEST_IGNORE_PROFIT").as_deref()==Ok("true"),
+        simulate_ignore_profit: env::var("DEX_TEST_IGNORE_PROFIT").as_deref()==Ok("true") || env::var("ORCA_TEST_IGNORE_PROFIT").as_deref()==Ok("true"),
     });
     if cfg.amount_raw==0 || cfg.slippage_bps>10_000 {bail!("Invalid amount or slippage")}
+    if cfg.compute_limit == 0 || cfg.compute_limit > 1_400_000 { bail!("Invalid compute unit limit"); }
     let db=database().await?;
     let mq=channel().await?;
     mq.basic_qos(1,BasicQosOptions::default()).await?;
-    let mut stream=mq.basic_consume("signals.arbitrage.execute","orca-atomic-test",BasicConsumeOptions::default(),Default::default()).await?;
+    let mut stream=mq.basic_consume("signals.arbitrage.execute","cross-dex-atomic-test",BasicConsumeOptions::default(),Default::default()).await?;
     while let Some(delivery)=stream.next().await {
         let d=delivery?;
-        let work=async {let sig:Signal=serde_json::from_slice(&d.data)?;process(&db,&cfg,sig).await}.await;
-        if let Err(e)=work {eprintln!("ORCA ATOMIC TEST ERROR: {e:#}");}
+        let work=async { let sig:Signal=serde_json::from_slice(&d.data)?;process(&db,&cfg,sig).await }.await;
+        if let Err(e)=work {eprintln!("DEX ATOMIC TEST ERROR: {e:#}");}
         d.ack(BasicAckOptions::default()).await?;
     }
     Ok(())
