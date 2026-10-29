@@ -3,6 +3,7 @@ use orca_whirlpools::{swap_instructions, SwapQuote, SwapType};
 use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::{instruction::Instruction, pubkey::Pubkey};
 use std::str::FromStr;
+use solana_sdk::signature::Keypair;
 
 use crate::{Quote, SwapRequest};
 
@@ -11,6 +12,7 @@ pub struct OrcaAdapter;
 pub struct OrcaSwap {
     pub quote: Quote,
     pub instructions: Vec<Instruction>,
+    pub additional_signers: Vec<Keypair>,
 }
 
 impl OrcaAdapter {
@@ -42,9 +44,9 @@ impl OrcaAdapter {
         .await
         .map_err(|e| anyhow::anyhow!("Orca swap_instructions: {}", e))?;
 
-        if !result.additional_signers.is_empty() {
-            bail!("Orca requires additional signers: account handling not yet integrated");
-        }
+        //if !result.additional_signers.is_empty() {
+        //    bail!("Orca requires additional signers: account handling not yet integrated");
+        //}
 
         let quote = match result.quote {
             SwapQuote::ExactIn(q) => Quote {
@@ -58,6 +60,10 @@ impl OrcaAdapter {
         if quote.minimum_out_atomic == 0 || result.instructions.is_empty() {
             bail!("Orca returned empty quote or instructions");
         }
-        Ok(OrcaSwap { quote, instructions: result.instructions })
+        Ok(OrcaSwap {
+            quote,
+            instructions: result.instructions,
+            additional_signers: result.additional_signers,
+        })
     }
 }
