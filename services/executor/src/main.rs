@@ -11,7 +11,6 @@ use solradar_common::{channel, config, database, Signal};
 use solradar_dex_adapters::{orca::OrcaAdapter, Quote, SwapRequest};
 use solradar_dex_adapters::raydium_clmm;
 use solana_sdk::{instruction::Instruction, pubkey::Pubkey};
-use solana_sdk::signature::Keypair;
 use std::str::FromStr;
 use sqlx::{MySqlPool, Row};
 use std::{env, sync::Arc};
@@ -187,6 +186,10 @@ async fn process(db: &MySqlPool, cfg: &Runtime, sig: Signal) -> Result<()> {
             Direction::BuySell => &[Direction::BuySell],
             Direction::SellBuy => &[Direction::SellBuy],
         };
+
+        let mut failures: Vec<String> = Vec::new();
+        let mut winner: Option<(Direction, BuiltSwap, BuiltSwap, u64, f64)> = None;
+        
         for direction in candidates.iter().copied() {
             let (first_pool, second_pool, first_mint, second_mint, initial_amount) = match direction {
                 Direction::BuySell => (&buy_pool, &sell_pool, &cfg.allowed_quote, &token, cfg.amount_raw),
