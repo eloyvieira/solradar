@@ -10,7 +10,8 @@ use solana_sdk::{signature::{read_keypair_file, Keypair}, signer::Signer};
 use solradar_common::{channel, config, database, Signal};
 use solradar_dex_adapters::{orca::OrcaAdapter, Quote, SwapRequest};
 use solradar_dex_adapters::raydium_clmm;
-use solana_sdk::{instruction::Instruction, pubkey::Pubkey};
+use solana_sdk::{instruction::Instruction, pubkey::Pubkey, system_instruction};
+use std::collections::HashSet;
 use std::str::FromStr;
 use sqlx::{MySqlPool, Row};
 use std::{env, sync::Arc};
@@ -113,6 +114,63 @@ async fn raydium_token_account(
     Ok((ata, program))
 }
 
+// Instruções de preparação compartilhadas pelos dois swaps.
+// Criam ATAs ausentes sem enviar transação separada.
+async fn prepare_token_accounts(
+    cfg: &Runtime,
+    first_mint: Pubkey,
+    initial_amount: u64,
+    first_dex_is_raydium: bool,
+    raydium_mints: &[Pubkey],
+) -> Result<Vec<Instruction>> {
+    let wallet = cfg.wallet.pubkey();
+    let mut instructions = Vec::new();
+    let mut seen = HashSet::new();
+
+    for &mint in raydium_mints {
+        if !seen.insert(mint) { continue; }
+        let (ata, program) = raydium_token_account(&cfg.rpc, wallet, mint).await
+            .with_context(|| format!("Preparing ATA for mint {mint}"))?;
+
+        instructions.push(
+            spl_associated_token_account::instruction::create_associated_token_account_idempotent(
+                &wallet, &wallet, &mint, &program,
+            ),
+        );
+
+        // Somente a PRIMEIRA perna Raydium com entrada wSOL precisa
+        // de saldo inicial em sua ATA. A segunda recebe tokens da primeira.
+        if first_dex_is_raydium && mint == first_mint
+            && mint == spl_token::native_mint::ID
+        {
+            // Se a ATA ainda não existir, consideramos saldo zero.
+            // Qualquer outro erro de RPC não deve ser ignorado.
+            let existing_balance = match cfg.rpc.get_account(&ata).await {
+                Ok(account) => {
+                    if account.owner != program {
+                        bail!("wSOL ATA {ata} has unexpected owner");
+                    }
+                    if account.data.len() < 72 {
+                        bail!("Invalid wSOL ATA data length");
+                    }
+                    u64::from_le_bytes(account.data[64..72].try_into()?)
+                }
+                Err(err) => {
+                    let message = err.to_string();
+                    if message.contains("AccountNotFound") { 0 }
+                    else { return Err(err.into()); }
+                }
+            };
+            let deficit = initial_amount.saturating_sub(existing_balance);
+            if deficit > 0 {
+                instructions.push(system_instruction::transfer(&wallet, &ata, deficit));
+                instructions.push(spl_token::instruction::sync_native(&program, &ata)?);
+            }
+        }
+    }
+    Ok(instructions)
+}
+
 // Single representation of a swap regardless of the DEX protocol.
 struct BuiltSwap {
     quote: Quote,
@@ -186,29 +244,9 @@ async fn build_swap(
 
             let memo_program = MEMO_PROGRAM_ID;
 
-            // Confere que as ATAs existentes pertencem aos programas
-            // esperados. Esta etapa não cria contas ausentes.
-            for (ata, program) in [
-                (input_ata, input_program),
-                (output_ata, output_program),
-            ] {
-                let account = cfg.rpc.get_account(&ata).await
-                    .with_context(|| {
-                        format!(
-                            "Token account {} unavailable; \
-                             account preparation is not implemented",
-                            ata
-                        )
-                    })?;
-
-                if account.owner != program {
-                    bail!(
-                        "Token account {} has unexpected owner {}",
-                        ata,
-                        account.owner
-                    );
-                }
-            }
+            // A criação das ATAs é incluída no início da transação atômica,
+            // não feita aqui. A cotação não depende de elas já existirem.
+            let _ = (input_program, output_program);
 
             // Chama a função no adapter.
             let swap = raydium_clmm::build_exact_in(
@@ -404,12 +442,35 @@ async fn process(db: &MySqlPool, cfg: &Runtime, sig: Signal) -> Result<()> {
         if min_out <= initial_amount && !cfg.simulate_ignore_profit {
             bail!("Worst-case unprofitable: direction={}, input={}, return={}",direction.name(),initial_amount,min_out);
         }
+        
+
+        // ATAs da Raydium devem ser criadas antes das instruções de swap.
+        // Dedupe por mint: ambas as pernas compartilham a mesma wallet.
+        let mut raydium_mints = Vec::new();
+        if matches!(dex_router::get_adapter(&first_pool.dex_id)?, dex_router::DexType::RaydiumClmm) {
+            raydium_mints.push(Pubkey::from_str(first_mint)?);
+            raydium_mints.push(Pubkey::from_str(second_mint)?);
+        }
+        if matches!(dex_router::get_adapter(&second_pool.dex_id)?, dex_router::DexType::RaydiumClmm) {
+            raydium_mints.push(Pubkey::from_str(second_mint)?);
+            raydium_mints.push(Pubkey::from_str(first_mint)?);
+        }
+        let prep = prepare_token_accounts(
+            cfg,
+            Pubkey::from_str(first_mint)?,
+            initial_amount,
+            matches!(dex_router::get_adapter(&first_pool.dex_id)?, dex_router::DexType::RaydiumClmm),
+            &raydium_mints,
+        ).await?;
+        let mut first_instructions = prep;
+        first_instructions.extend(first.instructions.iter().cloned());
+
 
         let blockhash = cfg.rpc.get_latest_blockhash().await?;
         let additional_signers: Vec<&Keypair> = first.additional_signers.iter().chain(second.additional_signers.iter()).collect();
         log_step(db,&sig.id,Some(&order_id),"ATOMIC_TX_BUILD","STARTED",Some(direction.name())).await?;
         let tx = transaction_builder::atomic_transaction(
-            &first.instructions,
+            &first_instructions,
             &second.instructions,
             &[],
             &cfg.wallet,
