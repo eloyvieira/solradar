@@ -17,6 +17,9 @@ use std::{env, sync::Arc};
 use uuid::Uuid;
 
 use spl_token_2022::ID as TOKEN_2022_PROGRAM_ID;
+use spl_associated_token_account::ID as ASSOCIATED_TOKEN_PROGRAM_ID;
+use spl_token::ID as TOKEN_PROGRAM_ID;
+use spl_memo::ID as MEMO_PROGRAM_ID;
 
 struct Runtime {
     rpc: RpcClient,
@@ -83,16 +86,14 @@ async fn raydium_token_account(
     wallet: Pubkey,
     mint: Pubkey,
 ) -> Result<(Pubkey, Pubkey)> {
-    let token_program = Pubkey::from_str(
-        "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
-    )?;
+    let token_program = TOKEN_PROGRAM_ID;
     let token_2022_program = TOKEN_2022_PROGRAM_ID;
-    let associated_token_program = Pubkey::from_str(
-        "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
-    )?;
+    let associated_token_program = ASSOCIATED_TOKEN_PROGRAM_ID;
 
-    let mint_account = rpc.get_account(&mint).await
-        .with_context(|| format!("Cannot load mint {mint}"))?;
+    let mint_account = rpc
+        .get_account(&mint)
+        .await
+        .with_context(|| format!("Raydium: failed loading mint {mint}"))?;
 
     let program = mint_account.owner;
 
@@ -167,22 +168,23 @@ async fn build_swap(
                 &cfg.rpc,
                 cfg.wallet.pubkey(),
                 mint_in,
-            ).await?;
+            )
+            .await
+            .context("Raydium: preparing input token account")?;
+
             let (output_ata, output_program) = raydium_token_account(
                 &cfg.rpc,
                 cfg.wallet.pubkey(),
                 mint_out,
-            ).await?;
+            )
+            .await
+            .context("Raydium: preparing output token account")?;
 
-            let token_program = Pubkey::from_str(
-                "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
-            )?;
-            
+            let token_program = TOKEN_PROGRAM_ID;
+
             let token_2022_program = TOKEN_2022_PROGRAM_ID;
 
-            let memo_program = Pubkey::from_str(
-                "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr"
-            )?;
+            let memo_program = MEMO_PROGRAM_ID;
 
             // Confere que as ATAs existentes pertencem aos programas
             // esperados. Esta etapa não cria contas ausentes.
@@ -222,7 +224,14 @@ async fn build_swap(
                 memo_program,
                 request.amount_in_atomic,
                 cfg.slippage_bps,
-            ).await?;
+            )
+            .await
+            .with_context(|| {
+                format!(
+                    "Raydium build_exact_in failed: pool={}, input={}, output={}",
+                    pool, mint_in, mint_out
+                )
+            })?;
 
             let quote = Quote {
                 amount_out_atomic: swap.quote.amount_out,
@@ -463,7 +472,7 @@ async fn main()->Result<()> {
         compute_price: config("ARBITRAGE_CU_PRICE_MICROLAMPORTS",0_u64),
         simulate_ignore_profit: env::var("DEX_TEST_IGNORE_PROFIT").as_deref()==Ok("true") || env::var("ORCA_TEST_IGNORE_PROFIT").as_deref()==Ok("true"),
     });
-    if cfg.slippage_bps>10_000 {bail!("Invalid slippage")}
+    if cfg.slippage_bps>=10_000 {bail!("Invalid slippage")}
     if cfg.direction != Direction::SellBuy && cfg.amount_raw == 0 {bail!("ARBITRAGE_AMOUNT_RAW must be positive")}
     if cfg.direction == Direction::SellBuy && cfg.token_amount_raw == 0 {bail!("ARBITRAGE_TOKEN_AMOUNT_RAW must be positive for SELL_BUY")}
     if cfg.compute_limit == 0 || cfg.compute_limit > 1_400_000 { bail!("Invalid compute unit limit"); }
