@@ -223,7 +223,6 @@ async fn monitor_open_positions(db: &MySqlPool, cfg: &Settings) -> Result<()> {
 
 pub async fn run(db: MySqlPool) -> Result<()> {
     let cfg = Settings::from_env()?;
-    let db = database().await?;
     println!("Pump Executor started: PAPER only; no real transactions");
 
     loop {

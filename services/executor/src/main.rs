@@ -4,7 +4,6 @@ mod dex_router;
 mod transaction_builder;
 
 use anyhow::Result;
-use std::sync::Arc;
 use tokio::task::JoinSet;
 
 use solradar_common::{database, init};
@@ -14,17 +13,16 @@ async fn main() -> Result<()> {
     init();
 
     let db = database().await?;
-    let db = Arc::new(db);
     let mut tasks = JoinSet::new();
 
 
-    let arbitrage_db = Arc::clone(&db);
+    let arbitrage_db = db.clone();
     tasks.spawn(async move {
         arbitrage::run(arbitrage_db).await
     });
 
 
-    let pump_db = Arc::clone(&db);
+    let pump_db = db.clone();
     tasks.spawn(async move {
         pump::run(pump_db).await
     });
