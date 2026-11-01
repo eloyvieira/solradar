@@ -28,12 +28,12 @@ pub struct PoolState {
 }
 
 fn pubkey_at(data: &[u8], start: usize) -> Result<Pubkey> {
-	let bytes: [u8; 32] = data.get(start..start + 32).context("Truncated pool pubkey")?.try_into()?;
-	Ok(Pubkey::new_from_array(bytes))
+    let bytes: [u8; 32] = data.get(start..start + 32).context("Truncated pool pubkey")?.try_into()?;
+    Ok(Pubkey::new_from_array(bytes))
 }
 
 fn u16_at(data: &[u8], start: usize) -> Result<u16> {
-	Ok(u16::from_le_bytes(data.get(start..start + 2).context("Truncated pool u16")?.try_into()?))
+    Ok(u16::from_le_bytes(data.get(start..start + 2).context("Truncated pool u16")?.try_into()?))
 }
 
 fn u128_at(data: &[u8], start: usize) -> Result<u128> {
@@ -147,4 +147,45 @@ pub fn build_swap_v2(pool: &PoolState, p: &SwapV2Params) -> Result<Instruction> 
     data.extend_from_slice(&p.sqrt_price_limit_x64.to_le_bytes());
     data.push(1); // is_base_input = true (ExactIn)
     Ok(Instruction { program_id: raydium_program_id()?, accounts, data })
+}
+
+pub const TICKS_PER_ARRAY: i32 = 60;
+
+pub fn tick_array_address(pool: Pubkey, start_tick: i32) -> Result<Pubkey> {
+    let program = raydium_program_id()?;
+    Ok(Pubkey::find_program_address(
+        &[b"tick_array", pool.as_ref(), &start_tick.to_be_bytes()],
+        &program,
+    ).0)
+}
+
+pub fn tick_array_start(tick: i32, tick_spacing: u16) -> Result<i32> {
+    if tick_spacing == 0 { bail!("tick_spacing must be positive"); }
+    let width = i32::from(tick_spacing) * TICKS_PER_ARRAY;
+    Ok(tick.div_euclid(width) * width)
+}
+
+pub async fn load_tick_array(
+    rpc: &RpcClient,
+    pool: Pubkey,
+    start_tick: i32,
+) -> Result<(Pubkey, Vec<u8>)> {
+    let address = tick_array_address(pool, start_tick)?;
+    let account = rpc.get_account(&address).await
+        .with_context(|| format!("Raydium tick array unavailable: {address}"))?;
+    if account.owner != raydium_program_id()? {
+        bail!("Tick array {address} has incorrect owner");
+    }
+    let d = &account.data;
+    if d.len() < 44 {
+        bail!("Truncated tick array: {address}");
+    }
+    let owner_pool = pubkey_at(d, 12)?;
+    if owner_pool != pool {
+        bail!("Tick array {address} belongs to a different pool");
+    }
+    if i32_at(d, 8)? != start_tick {
+        bail!("Tick array {address} has unexpected start index");
+    }
+    Ok((address, d.clone()))
 }
