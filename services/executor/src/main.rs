@@ -75,6 +75,43 @@ async fn update(db: &MySqlPool, order: &str, signal: &str, status: &str, signatu
     Ok(())
 }
 
+
+async fn raydium_token_account(
+    rpc: &RpcClient,
+    wallet: Pubkey,
+    mint: Pubkey,
+) -> Result<(Pubkey, Pubkey)> {
+    let token_program = Pubkey::from_str(
+        "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+    )?;
+    let token_2022_program = Pubkey::from_str(
+        "TokenzQdBNbLqP5VEhdkAS6EPF7Gv6QftGxAfYq"
+    )?;
+    let associated_token_program = Pubkey::from_str(
+        "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+    )?;
+
+    let mint_account = rpc.get_account(&mint).await
+        .with_context(|| format!("Cannot load mint {mint}"))?;
+
+    let program = mint_account.owner;
+
+    if program != token_program && program != token_2022_program {
+        bail!("Unsupported token program for mint {mint}: {program}");
+    }
+
+    let ata = Pubkey::find_program_address(
+        &[
+            wallet.as_ref(),
+            program.as_ref(),
+            mint.as_ref(),
+        ],
+        &associated_token_program,
+    ).0;
+
+    Ok((ata, program))
+}
+
 // Single representation of a swap regardless of the DEX protocol.
 struct BuiltSwap {
     quote: Quote,
@@ -103,25 +140,110 @@ async fn build_swap(
                 additional_signers: swap.additional_signers,
             })
         }
+
         dex_router::DexType::RaydiumClmm => {
-            // Validate on-chain ownership before rejecting the incomplete swap.
-            // The current Raydium adapter only provides load_pool_state()
-            // and build_swap_v2(). It does NOT compute executable quotes or
-            // fetch/sequence initialized tick arrays.
-            let pool = Pubkey::from_str(&request.pool_address)
-                .context("Invalid Raydium CLMM pool address")?;
-            let state = raydium_clmm::load_pool_state(&cfg.rpc, pool).await?;
-            let mint_in = Pubkey::from_str(&request.mint_in)?;
-            let mint_out = Pubkey::from_str(&request.mint_out)?;
-            if !((mint_in == state.mint_0 && mint_out == state.mint_1)
-                || (mint_in == state.mint_1 && mint_out == state.mint_0))
-            {
-                bail!("Raydium CLMM pool {} does not trade {}/{}", pool, mint_in, mint_out);
+            let pool = Pubkey::from_str(&request.pool_address).context("Invalid Raydium CLMM pool address")?;
+            let mint_in = Pubkey::from_str(&request.mint_in).context("Invalid Raydium input mint")?;
+            let mint_out = Pubkey::from_str(&request.mint_out).context("Invalid Raydium output mint")?;
+
+            let state = raydium_clmm::load_pool_state(
+                &cfg.rpc,
+                pool,
+            ).await?;
+            if !(
+                (mint_in == state.mint_0 && mint_out == state.mint_1)
+                ||
+                (mint_in == state.mint_1 && mint_out == state.mint_0)
+            ) {
+                bail!(
+                    "Raydium CLMM pool {} does not trade {}/{}",
+                    pool,
+                    mint_in,
+                    mint_out
+                );
             }
-            bail!(
-                "Raydium CLMM pool {} validated on-chain, but executable quote and tick-array discovery are not implemented; atomic swap blocked",
-                pool
-            );
+
+            let (input_ata, input_program) = raydium_token_account(
+                &cfg.rpc,
+                cfg.wallet.pubkey(),
+                mint_in,
+            ).await?;
+            let (output_ata, output_program) = raydium_token_account(
+                &cfg.rpc,
+                cfg.wallet.pubkey(),
+                mint_out,
+            ).await?;
+
+            let token_program = Pubkey::from_str(
+                "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+            )?;
+
+            let token_2022_program = Pubkey::from_str(
+                "TokenzQdBNbLqP5VEhdkAS6EPF7Gv6QftGxAfYq"
+            )?;
+
+            let memo_program = Pubkey::from_str(
+                "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr"
+            )?;
+
+            // Confere que as ATAs existentes pertencem aos programas
+            // esperados. Esta etapa não cria contas ausentes.
+            for (ata, program) in [
+                (input_ata, input_program),
+                (output_ata, output_program),
+            ] {
+                let account = cfg.rpc.get_account(&ata).await
+                    .with_context(|| {
+                        format!(
+                            "Token account {} unavailable; \
+                             account preparation is not implemented",
+                            ata
+                        )
+                    })?;
+
+                if account.owner != program {
+                    bail!(
+                        "Token account {} has unexpected owner {}",
+                        ata,
+                        account.owner
+                    );
+                }
+            }
+
+            // Chama a função no adapter.
+            let swap = raydium_clmm::build_exact_in(
+                &cfg.rpc,
+                pool,
+                cfg.wallet.pubkey(),
+                mint_in,
+                mint_out,
+                input_ata,
+                output_ata,
+                token_program,
+                token_2022_program,
+                memo_program,
+                request.amount_in_atomic,
+                cfg.slippage_bps,
+            ).await?;
+
+            let quote = Quote {
+                amount_out_atomic: swap.quote.amount_out,
+                minimum_out_atomic: swap.minimum_out,
+                estimated_fee_atomic: swap.quote.fee_amount,
+                slot: cfg.rpc.get_slot().await?,
+            };
+
+            if quote.minimum_out_atomic == 0
+                || swap.instructions.is_empty()
+            {
+                bail!("Raydium returned empty quote or instructions");
+            }
+
+            Ok(BuiltSwap {
+                quote,
+                instructions: swap.instructions,
+                additional_signers: Vec::new(),
+            })
         }
     }
 }
