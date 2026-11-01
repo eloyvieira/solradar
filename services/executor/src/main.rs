@@ -432,6 +432,11 @@ async fn process(db: &MySqlPool, cfg: &Runtime, sig: Signal) -> Result<()> {
         }
 
         let (direction, first, second, initial_amount, projected_roi) = winner.ok_or_else(|| anyhow::anyhow!("No viable route: {}",failures.join(" | ")))?;
+        let (first_pool, second_pool, first_mint, second_mint) = match direction {
+            Direction::BuySell => (&buy_pool, &sell_pool, &cfg.allowed_quote, &token),
+            Direction::SellBuy => (&sell_pool, &buy_pool, &token, &cfg.allowed_quote),
+            Direction::Auto => unreachable!(),
+        };
         let min_out = second.quote.minimum_out_atomic;
         log_step(db,&sig.id,Some(&order_id),"DIRECTION_SELECTED","OK",Some(&serde_json::json!({
             "direction":direction.name(),

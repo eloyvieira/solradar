@@ -1,22 +1,36 @@
-use anyhow::Result;
+use anyhow::{bail, Context, Result};
 use futures_util::StreamExt;
-use lapin::options::{BasicAckOptions,BasicConsumeOptions,BasicQosOptions};
-use solradar_common::{database,channel,publish,PoolEvent,Signal,config};
+use lapin::options::{BasicAckOptions, BasicConsumeOptions, BasicNackOptions, BasicQosOptions};
+use solradar_common::{channel, config, database, PoolEvent};
 use sqlx::Row;
+use std::{env, time::Duration};
 use uuid::Uuid;
 
-#[tokio::main]async fn main()->Result<()>{
+const WSOL_MINT: &str = "So11111111111111111111111111111111111111112";
+
+#[tokio::main]
+async fn main()->Result<()>{
 	solradar_common::init();
-	let db=database().await?;
-	let mq=channel().await?;
-	mq.basic_qos(20,BasicQosOptions::default()).await?;
+
+    // Não confundir USDT com USDC: exigir explicitamente o mint de USDT.
+    let usdt_mint = env::var("PUMP_USDT_MINT")
+        .context("PUMP_USDT_MINT must contain the Solana USDT mint address")?;
+    if usdt_mint.trim().is_empty() || usdt_mint == WSOL_MINT {
+        bail!("Invalid PUMP_USDT_MINT");
+    }
+
+    let db = database().await?;
+    let mq = channel().await?;
+    mq.basic_qos(20, BasicQosOptions::default()).await?;
 	
 	let mut stream=mq.basic_consume("market.pump","pump-detector",BasicConsumeOptions::default(),Default::default()).await?;
-	while 
-	let Some(delivery)=stream.next().await{
-		let d=delivery?;
-		let outcome:Result<()> = async {
-			let event:PoolEvent=serde_json::from_slice(&d.data)?;
+	
+    while let Some(delivery) = stream.next().await {
+        let d = delivery?;
+
+        let outcome: Result<()> = async {
+            let event: PoolEvent = serde_json::from_slice(&d.data)?;
+            
 			let row = sqlx::query(
 			    r#"
 			    SELECT
