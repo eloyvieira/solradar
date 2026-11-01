@@ -16,6 +16,8 @@ use sqlx::{MySqlPool, Row};
 use std::{env, sync::Arc};
 use uuid::Uuid;
 
+use spl_token_2022::ID as TOKEN_2022_PROGRAM_ID;
+
 struct Runtime {
     rpc: RpcClient,
     wallet: solana_sdk::signature::Keypair,
@@ -84,9 +86,7 @@ async fn raydium_token_account(
     let token_program = Pubkey::from_str(
         "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
     )?;
-    let token_2022_program = Pubkey::from_str(
-        "TokenzQdBNbLqP5VEhdkAS6EPF7Gv6QftGxAfYq"
-    )?;
+    let token_2022_program = TOKEN_2022_PROGRAM_ID;
     let associated_token_program = Pubkey::from_str(
         "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
     )?;
@@ -177,10 +177,8 @@ async fn build_swap(
             let token_program = Pubkey::from_str(
                 "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
             )?;
-
-            let token_2022_program = Pubkey::from_str(
-                "TokenzQdBNbLqP5VEhdkAS6EPF7Gv6QftGxAfYq"
-            )?;
+            
+            let token_2022_program = TOKEN_2022_PROGRAM_ID;
 
             let memo_program = Pubkey::from_str(
                 "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr"
