@@ -695,24 +695,18 @@ pub fn calculate_swap_exact_in(
     }
 
     let mut initialized_ticks = Vec::new();
-
+    let mut limit_order_ticks: Vec<i32> = Vec::new();
     for array in tick_arrays {
         if array.pool != pool.address {
             bail!("Tick array belongs to another pool");
         }
 
         for tick in &array.ticks {
-            // O cálculo padrão não processa ordens
-            // limitadas presentes nos ticks.
-            if tick.orders_amount != 0
-                || tick.part_filled_orders_remaining != 0
+            if tick.orders_amount > 0
+                || tick.part_filled_orders_remaining > 0
             {
-                bail!(
-                    "Raydium limit orders unsupported at tick {}",
-                    tick.tick
-                );
+                limit_order_ticks.push(tick.tick);
             }
-
             if tick.liquidity_gross > 0 {
                 initialized_ticks.push(InitializedTick {
                     tick: tick.tick,
@@ -723,7 +717,6 @@ pub fn calculate_swap_exact_in(
     }
 
     initialized_ticks.sort_unstable_by_key(|t| t.tick);
-
     for pair in initialized_ticks.windows(2) {
         if pair[0].tick == pair[1].tick {
             bail!("Duplicate initialized Raydium tick");
@@ -749,6 +742,25 @@ pub fn calculate_swap_exact_in(
     .map_err(|e| anyhow::anyhow!(
         "Raydium swap math failed: {e:?}"
     ))?;
+
+    // Verifica ordens limite somente no caminho estimado do swap.
+    // Se existir uma ordem no caminho, a cotação padrão não é confiável.
+    let start_tick = pool.tick_current;
+    let end_tick = result.final_tick;
+    let min_tick = start_tick.min(end_tick);
+    let max_tick = start_tick.max(end_tick);
+    for tick in &limit_order_ticks {
+        if *tick >= min_tick && *tick <= max_tick {
+            bail!(
+                "Raydium swap crosses limit order at tick {} \
+                 (current={}, final={}). \
+                 Full limit-order math required",
+                tick,
+                start_tick,
+                end_tick
+            );
+        }
+    }
 
     if result.amount_in != amount_in {
         bail!(
