@@ -28,3 +28,5 @@ spl-token = "6"
 spl-token-2022 = "6"
 spl-associated-token-account = "6"
 spl-memo = "6"
+solana-message = "2.4.0"
+solana-address-lookup-table-interface = { version = "2.2.2", features = ["bincode"] }

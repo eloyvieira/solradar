@@ -14,8 +14,8 @@ use sqlx::{MySqlPool, Row};
 use std::{env, sync::Arc};
 use uuid::Uuid;
 use crate::{dex_router, transaction_builder};
-use solana_address_lookup_table_program::state::AddressLookupTable;
-use solana_sdk::address_lookup_table_account::AddressLookupTableAccount;
+use solana_address_lookup_table_interface::state::AddressLookupTable;
+use solana_message::AddressLookupTableAccount;
 
 use spl_token_2022::ID as TOKEN_2022_PROGRAM_ID;
 use spl_associated_token_account::ID as ASSOCIATED_TOKEN_PROGRAM_ID;
@@ -57,8 +57,11 @@ async fn load_lookup_tables(
 ) -> Result<Vec<AddressLookupTableAccount>> {
     let addresses = env::var("ARBITRAGE_LOOKUP_TABLES").unwrap_or_default();
     let mut tables = Vec::new();
-
-    for address in addresses.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+    for address in addresses
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         let key = Pubkey::from_str(address).with_context(|| format!("Invalid ALT address: {address}"))?;
         let account = rpc.get_account(&key).await.with_context(|| format!("Failed loading ALT {key}"))?;
         let table = AddressLookupTable::deserialize(&account.data).with_context(|| format!("Invalid ALT data: {key}"))?;
