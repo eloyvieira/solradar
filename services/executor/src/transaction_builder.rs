@@ -49,8 +49,7 @@ pub fn atomic_transaction(
         blockhash,
     )?;
 
-    let mut signers: Vec<&Keypair> =
-        Vec::with_capacity(1 + additional_signers.len());
+    let mut signers: Vec<&Keypair> = Vec::with_capacity(1 + additional_signers.len());
 
     signers.push(wallet);
     signers.extend_from_slice(additional_signers);

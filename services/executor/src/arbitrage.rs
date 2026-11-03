@@ -14,6 +14,8 @@ use sqlx::{MySqlPool, Row};
 use std::{env, sync::Arc};
 use uuid::Uuid;
 use crate::{dex_router, transaction_builder};
+use solana_address_lookup_table_program::state::AddressLookupTable;
+use solana_sdk::address_lookup_table_account::AddressLookupTableAccount;
 
 use spl_token_2022::ID as TOKEN_2022_PROGRAM_ID;
 use spl_associated_token_account::ID as ASSOCIATED_TOKEN_PROGRAM_ID;
@@ -48,6 +50,25 @@ impl Direction {
     fn name(self) -> &'static str {
         match self { Self::BuySell => "BUY_SELL", Self::SellBuy => "SELL_BUY", Self::Auto => "AUTO" }
     }
+}
+
+async fn load_lookup_tables(
+    rpc: &RpcClient,
+) -> Result<Vec<AddressLookupTableAccount>> {
+    let addresses = env::var("ARBITRAGE_LOOKUP_TABLES").unwrap_or_default();
+    let mut tables = Vec::new();
+
+    for address in addresses.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+        let key = Pubkey::from_str(address).with_context(|| format!("Invalid ALT address: {address}"))?;
+        let account = rpc.get_account(&key).await.with_context(|| format!("Failed loading ALT {key}"))?;
+        let table = AddressLookupTable::deserialize(&account.data).with_context(|| format!("Invalid ALT data: {key}"))?;
+        tables.push(AddressLookupTableAccount {
+            key,
+            addresses: table.addresses.to_vec(),
+        });
+    }
+
+    Ok(tables)
 }
 
 async fn log_step(db: &MySqlPool, signal_id: &str, order_id: Option<&str>, step: &str, status: &str, details: Option<&str>) -> Result<()> {
@@ -469,13 +490,29 @@ async fn process(db: &MySqlPool, cfg: &Runtime, sig: Signal) -> Result<()> {
         first_instructions.extend(first.instructions.iter().cloned());
 
 
+        let lookup_tables = load_lookup_tables(&cfg.rpc).await?;
         let blockhash = cfg.rpc.get_latest_blockhash().await?;
         let additional_signers: Vec<&Keypair> = first.additional_signers.iter().chain(second.additional_signers.iter()).collect();
         log_step(db,&sig.id,Some(&order_id),"ATOMIC_TX_BUILD","STARTED",Some(direction.name())).await?;
+
+        let mut alt_addresses = std::collections::BTreeSet::new();
+        for ix in first_instructions.iter().chain(second.instructions.iter()) {
+            for account in &ix.accounts {
+                if !account.is_signer && account.pubkey != cfg.wallet.pubkey() {
+                    alt_addresses.insert(account.pubkey);
+                }
+            }
+        }
+        println!("=== ALT ADDRESSES ===");
+        for address in &alt_addresses {
+            println!("{address}");
+        }
+        println!("=== END ALT ADDRESSES ===");
+
         let tx = transaction_builder::atomic_transaction(
             &first_instructions,
             &second.instructions,
-            &[],
+            &lookup_tables,
             &cfg.wallet,
             blockhash,
             &additional_signers,
