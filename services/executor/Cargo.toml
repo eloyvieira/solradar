@@ -30,3 +30,4 @@ spl-associated-token-account = "6"
 spl-memo = "6"
 solana-message = "2.4.0"
 solana-address-lookup-table-interface = { version = "2.2.2", features = ["bincode"] }
+orca-whirlpools = "6.0.0"
