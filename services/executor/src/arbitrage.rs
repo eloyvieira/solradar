@@ -22,6 +22,12 @@ use spl_associated_token_account::ID as ASSOCIATED_TOKEN_PROGRAM_ID;
 use spl_token::ID as TOKEN_PROGRAM_ID;
 use spl_memo::ID as MEMO_PROGRAM_ID;
 
+use orca_whirlpools::{
+    set_native_mint_wrapping_strategy,
+    set_enforce_token_balance_check,
+    NativeMintWrappingStrategy,
+};
+
 struct Runtime {
     rpc: RpcClient,
     wallet: solana_sdk::signature::Keypair,
@@ -562,6 +568,14 @@ pub async fn run(db: MySqlPool) -> Result<()> {
     if env::var("ARBITRAGE_LIVE_ENABLED").as_deref()==Ok("true") {
         bail!("LIVE disabled in cross-DEX atomic simulation prototype");
     }
+
+    set_native_mint_wrapping_strategy(
+        NativeMintWrappingStrategy::None,
+    ).map_err(|e| anyhow::anyhow!("Orca WSOL config: {e}"))?;
+
+    set_enforce_token_balance_check(false)
+        .map_err(|e| anyhow::anyhow!("Orca balance config: {e}"))?;
+
     let cfg=Arc::new(Runtime {
         rpc: RpcClient::new(env::var("SOLANA_RPC_URL").context("SOLANA_RPC_URL required")?),
         wallet: read_keypair_file(env::var("SOLANA_KEYPAIR_PATH").context("SOLANA_KEYPAIR_PATH required")?).map_err(|e|anyhow::anyhow!("Wallet read error: {e}"))?,
